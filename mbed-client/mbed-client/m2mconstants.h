@@ -212,7 +212,12 @@ extern const String EMPTY;
 #define ERROR_NETWORK           "NetworkError"
 #define ERROR_NO                "No error"
 
-#define MAX_RECONNECT_TIMEOUT        604800
+/*
+When a socket error happens, e.g. when sending data, the client goes to the reconnection mode.
+It closes the socket and after an initial random time (2 to 10 seconds) it opens the socket and tries to send the data again.
+This repeats until it succeeds. The max interval between re-tries is MAX_RECONNECT_TIMEOUT.
+*/
+#define MAX_RECONNECT_TIMEOUT        300	//in seconds. 
 #define RECONNECT_INCREMENT_FACTOR   2
 
 #define AUTO_OBS_TOKEN_MIN 1
