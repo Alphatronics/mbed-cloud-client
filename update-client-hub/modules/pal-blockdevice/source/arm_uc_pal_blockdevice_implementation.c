@@ -521,4 +521,43 @@ arm_uc_error_t ARM_UC_PAL_BlockDevice_GetFirmwareDetails(
     return result;
 }
 
+
+
+arm_uc_error_t ARM_UC_PAL_BlockDevice_Erase(uint32_t slot_id)
+{
+    arm_uc_error_t result = { .code = ERR_INVALID_PARAMETER };
+
+    UC_PAAL_TRACE("ARM_UC_PAL_BlockDevice_Erase: %" PRIX32 " %" PRIX32,
+                    slot_id, pal_blockdevice_hdr_size);
+
+    /* find the size needed to erase. Header is stored contiguous with firmware */
+    uint32_t erase_size = pal_blockdevice_round_up_to_sector(pal_blockdevice_hdr_size);
+
+    /* find address of slot */
+    uint32_t slot_addr = ARM_UC_BLOCKDEVICE_INVALID_SIZE;
+    uint32_t slot_size = ARM_UC_BLOCKDEVICE_INVALID_SIZE;
+    result = pal_blockdevice_get_slot_addr_size(slot_id, &slot_addr, &slot_size);
+
+    UC_PAAL_TRACE("erase: %" PRIX32 " %" PRIX32 " %" PRIX32, slot_addr, erase_size, slot_size);
+
+    int status = ARM_UC_BLOCKDEVICE_FAIL;
+    if (result.error == ERR_NONE) {
+        if (erase_size <= slot_size) {
+            /* erase */
+            status = arm_uc_blockdevice_erase(slot_addr, erase_size);
+            if (status == ARM_UC_BLOCKDEVICE_SUCCESS) {
+                /* set return code */
+                result.code = ERR_NONE;
+                /* store firmware size in global */
+                pal_blockdevice_firmware_size = 0;
+            }
+        } else {
+            UC_PAAL_ERR_MSG("not enough space for firmware image");
+            result.code = ERR_INVALID_PARAMETER;
+        }
+    }
+
+    return result;
+}
+
 #endif // #if defined(ARM_UC_FEATURE_PAL_BLOCKDEVICE)
