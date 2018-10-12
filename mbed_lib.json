@@ -24,7 +24,8 @@
         "PB_ENABLE_MALLOC",
         "PB_BUFFER_ONLY",
         "PV_PROFILE_STD",
-        "ARM_UC_PROFILE_MBED_CLOUD_CLIENT=1"
+        "ARM_UC_PROFILE_MBED_CLOUD_CLIENT=1",
+        "FWUPDATE_AUTOREBOOT=0"
     ],
     "target_overrides": {
         "*": {
