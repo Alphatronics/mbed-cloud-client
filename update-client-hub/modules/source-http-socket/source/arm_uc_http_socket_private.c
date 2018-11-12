@@ -208,7 +208,10 @@ arm_uc_error_t arm_uc_http_prepare_skip_to_event(uint32_t an_event)
 // Internal caching of the cache-state of the DNS is broken, just use it directly.
 bool arm_uc_dns_lookup_is_cached(void)
 {
-    return false;
+    if (context == NULL)
+        return false;
+    else
+        return (context->cache_address.addressType != 0) && (context->cache_address_length != 0);
 }
 
 #if (PAL_DNS_API_VERSION == 2)
