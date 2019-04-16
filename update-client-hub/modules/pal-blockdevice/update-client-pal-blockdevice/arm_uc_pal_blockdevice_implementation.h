@@ -135,17 +135,6 @@ arm_uc_error_t ARM_UC_PAL_BlockDevice_GetFirmwareDetails(
     uint32_t slot_id,
     arm_uc_firmware_details_t *details);
 
-
-/**
- * @brief Erase storage location
- *
- * @param slot_id Storage location ID.
- * @return Returns ERR_NONE on accept, and signals the event handler with
- *         either DONE or ERROR when complete.
- *         Returns ERR_INVALID_PARAMETER on reject, and no signal is sent.
- */
-arm_uc_error_t ARM_UC_PAL_BlockDevice_Erase(uint32_t slot_id);
-
 #ifdef __cplusplus
 }
 #endif
