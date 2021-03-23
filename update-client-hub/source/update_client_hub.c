@@ -72,7 +72,7 @@ void UC_HUB_scheduler_error_handler(uint32_t an_event)
  *        finish asynchronously, will invoke callback when initialization is done.
  * @param init_cb the callback to be invoked at the end of initialization.
  */
-arm_uc_error_t ARM_UC_HUB_Initialize(void (*init_cb)(int32_t))
+arm_uc_error_t ARM_UC_HUB_Initialize(void (*init_cb)(uintptr_t))
 {
     arm_uc_error_t retval;
 
@@ -455,4 +455,35 @@ arm_uc_error_t ARM_UC_API_GetActiveFirmwareDetails(arm_uc_firmware_details_t *de
         }
     }
     return err;
+}
+
+/**
+ * @brief Return whether or not the given state is a valid defined one.
+ */
+bool ARM_UC_IsValidState(arm_uc_update_state_t an_update_state)
+{
+    int val = (int)an_update_state;
+    bool is_valid = ((val >= (int)ARM_UC_UPDATE_STATE_FIRST)
+                     && (val <= (int)ARM_UC_UPDATE_STATE_LAST));
+    if (!is_valid) UC_ERROR_ERR_MSG("Invalid UC HUB reported state");
+    return is_valid;
+}
+
+/**
+ * @brief Return whether or not the given result is a valid defined one.
+ */
+bool ARM_UC_IsValidResult(arm_uc_update_result_t an_update_result)
+{
+    bool is_valid = ((an_update_result >= ARM_UC_UPDATE_RESULT_UPDATE_FIRST)
+                     && (an_update_result <= ARM_UC_UPDATE_RESULT_UPDATE_LAST))
+                    || ((an_update_result >= ARM_UC_UPDATE_RESULT_FETCHER_FIRST)
+                        && (an_update_result <= ARM_UC_UPDATE_RESULT_FETCHER_LAST))
+                    || ((an_update_result >= ARM_UC_UPDATE_RESULT_WRITER_FIRST)
+                        && (an_update_result <= ARM_UC_UPDATE_RESULT_WRITER_LAST))
+                    || ((an_update_result >= ARM_UC_UPDATE_RESULT_PROCESSOR_FIRST)
+                        && (an_update_result <= ARM_UC_UPDATE_RESULT_PROCESSOR_LAST))
+                    || ((an_update_result >= ARM_UC_UPDATE_RESULT_MANIFEST_FIRST)
+                        && (an_update_result <= ARM_UC_UPDATE_RESULT_MANIFEST_LAST));
+    if (!is_valid) UC_ERROR_ERR_MSG("Invalid UC HUB reported state");
+    return is_valid;
 }

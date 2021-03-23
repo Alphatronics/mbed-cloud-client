@@ -46,15 +46,14 @@
 //out should in length be PAL_MAX_FILE_AND_FOLDER_LENGTH
 static char* addRootToPath(const char* in, char* out,pal_fsStorageID_t id)
 {
-    char root[PAL_MAX_FILE_AND_FOLDER_LENGTH] = { 0 };
+    char root[PAL_MAX_FILE_AND_FOLDER_LENGTH];
     size_t len = 0;
     palStatus_t status;
 
-    memset(out,0,PAL_MAX_FILE_AND_FOLDER_LENGTH);
     status = pal_fsGetMountPoint(id, PAL_MAX_FILE_AND_FOLDER_LENGTH, root);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    strncat(out, root, PAL_MAX_FILE_AND_FOLDER_LENGTH-1); //-1 for null terminator space
+    strncpy(out, root, PAL_MAX_FILE_AND_FOLDER_LENGTH-1); //-1 for null terminator space
     len = strlen(out);
     if (PAL_FS_PARTITION_PRIMARY == id)
     {
@@ -81,19 +80,18 @@ PAL_PRIVATE uint8_t *bufferTest2  = NULL;
 PAL_PRIVATE palFileDescriptor_t g_fd1 = 0;
 PAL_PRIVATE palFileDescriptor_t g_fd2 = 0;
 
+// local copy of the primary root, needed as test may change it
+// and the cleanup needs a stable base to work on
+PAL_PRIVATE char rootPathPrimaryOriginal[PAL_MAX_FILE_AND_FOLDER_LENGTH];
+
+
 PAL_PRIVATE palStatus_t pal_fsClearAndInitialyze(pal_fsStorageID_t id)
 {
     palStatus_t status = PAL_SUCCESS;
 
-    if (pal_fsIsPrivatePartition(id))
-    {
-        status = pal_fsFormat(id);
-    }
-    else
-    {
-        char buffer[PAL_MAX_FILE_AND_FOLDER_LENGTH] = {0};
-        status = pal_fsRmFiles(addRootToPath("",buffer,id));
-    }
+    char buffer[PAL_MAX_FILE_AND_FOLDER_LENGTH] = {0};
+    status = pal_fsRmFiles(addRootToPath("",buffer,id));
+
     return(status);
 }
 
@@ -151,11 +149,14 @@ PAL_PRIVATE palStatus_t fileSystemCompareUtil(const char * pathCmp1, const char 
 
 TEST_GROUP(pal_fileSystem);
 
+
 TEST_SETUP(pal_fileSystem)
 {
 
-    pal_init();
     char buffer[PAL_MAX_FILE_AND_FOLDER_LENGTH] = {0};
+
+    // copy the root dir, so the deletion works also from teardown
+    addRootToPath("", rootPathPrimaryOriginal, PAL_FS_PARTITION_PRIMARY);
 
     pal_fsRmFiles(addRootToPath(TEST_DIR,buffer,PAL_FS_PARTITION_PRIMARY));//Remove all files in the testing DIRECTORY
     pal_fsRmDir(addRootToPath(TEST_DIR,buffer,PAL_FS_PARTITION_PRIMARY)); //Delete Directory if exist
@@ -227,7 +228,29 @@ TEST_TEAR_DOWN(pal_fileSystem)
         addRootToPath("",buffer,PAL_FS_PARTITION_SECONDARY);
         pal_fsRmDir(buffer);
     }
-    pal_destroy();
+
+    // If there is a primary root configured (eg. "/pri") and it was queried successfully
+    // on setup, use it also to do cleanup. This is needed to clean up after test which
+    // changes the root during test.
+    // Perhaps the same could be achieved by restoring the root dir before this cleanup code above is ran?!
+    if (strlen(rootPathPrimaryOriginal) > 1) {
+
+        snprintf(buffer, PAL_MAX_FILE_AND_FOLDER_LENGTH, "%s/%s", rootPathPrimaryOriginal, TEST_DIR);
+        pal_fsRmFiles(buffer);//Remove all files in the testing dir, eg (/pri/dir1
+        pal_fsRmDir(buffer); //Delete Directory if exist
+
+        snprintf(buffer, PAL_MAX_FILE_AND_FOLDER_LENGTH, "%s/%s", rootPathPrimaryOriginal, TEST_WORKING_DIR);
+        pal_fsRmFiles(buffer);//Remove all files in the testing dir, eg (/pri/work1
+        pal_fsRmDir(buffer); //Delete Directory if exist
+
+        snprintf(buffer, PAL_MAX_FILE_AND_FOLDER_LENGTH, "%s/%s", rootPathPrimaryOriginal, TEST_DIR2);
+        pal_fsRmFiles(buffer);//Remove all files in the testing dir, eg (/pri/dir2
+        pal_fsRmDir(buffer); //Delete Directory if exist
+
+    }
+    // the pal_destroy may not necessarily do the full PAL shutdown, if this is ran from
+    // a "live" environment, eg. testapp
+    pal_fsCleanup();
 
 }
 
@@ -359,7 +382,10 @@ void SDFormat_2Partition()
 
 TEST(pal_fileSystem, SDFormat)
 {
+//#if (PAL_NUMBER_OF_PARTITIONS == 2)
+    // There should be no reason why would the 2 partition code need to be tested if it is not configured for platform.
     SDFormat_2Partition();
+//#endif
     SDFormat_1Partition();
 }
 
@@ -372,8 +398,8 @@ TEST(pal_fileSystem, SDFormat)
 * | 1 | get root directory with pal_fsGetMountPoint                                    | PAL_SUCCESS |
 * | 2 | create TEST_WORKING_DIR with pal_fsMkDir                                       | PAL_SUCCESS |
 * | 3 | Change Root Directory to TEST_WORKING_DIR with     pal_fsSetMountPoint         | PAL_SUCCESS |
-* | 4 | create TEST_WORKING_DIR with pal_fsMkDir                                       | PAL_ERR_FS_NAME_ALREADY_EXIST |
-* | 5 | get root directory with pal_fsGetMountPoint                                    | PAL_SUCCESS |
+* | 4 | get root directory with pal_fsGetMountPoint                                    | PAL_SUCCESS |
+* | 5 | create TEST_WORKING_DIR with pal_fsMkDir                                       | PAL_ERR_FS_NAME_ALREADY_EXIST |
 */
 void rootDirectoryTests(pal_fsStorageID_t storageId)
 {
@@ -385,20 +411,22 @@ void rootDirectoryTests(pal_fsStorageID_t storageId)
     TEST_ASSERT_EQUAL(PAL_SUCCESS, status);
     
 /*#2*/
-    status = pal_fsMkDir(addRootToPath(TEST_WORKING_DIR,buffer,storageId)); //Create Directory
+    addRootToPath(TEST_WORKING_DIR, buffer, storageId);
+    status = pal_fsMkDir(buffer); //Create Directory
     TEST_ASSERT_EQUAL(PAL_SUCCESS, status);
 
 /*#3*/
-    status = pal_fsSetMountPoint(storageId, addRootToPath(TEST_WORKING_DIR,buffer,storageId)); //Setting New working Directory
+    status = pal_fsSetMountPoint(storageId, buffer); //Setting New working Directory
     TEST_ASSERT_EQUAL(PAL_SUCCESS, status);
 
 /*#4*/
+    status = pal_fsGetMountPoint(storageId, TEST_BUFFER_SIZE, getRootPath); //Setting New working Directory
+    TEST_ASSERT_EQUAL(PAL_SUCCESS, status);
+
+/*#5*/
     status = pal_fsMkDir(getRootPath); //should fail because already exits and path is absolute
     TEST_ASSERT_EQUAL(PAL_ERR_FS_NAME_ALREADY_EXIST, status);
 
-/*#5*/
-    status = pal_fsGetMountPoint(storageId, TEST_BUFFER_SIZE, getRootPath); //Setting New working Directory
-    TEST_ASSERT_EQUAL(PAL_SUCCESS, status);
 
 }
 
@@ -523,17 +551,32 @@ TEST(pal_fileSystem, directoryTests)
 void FilesTests(pal_fsStorageID_t storageId)
 {
     palStatus_t status = PAL_SUCCESS;
-    char rootPathBuffer1[PAL_MAX_FILE_AND_FOLDER_LENGTH] = {0};
-    char rootPathBuffer2[PAL_MAX_FILE_AND_FOLDER_LENGTH] = {0};
-    char buffer1[PAL_MAX_FILE_AND_FOLDER_LENGTH] = {0};
-    char buffer2[PAL_MAX_FILE_AND_FOLDER_LENGTH] = {0};
+    char rootPathBuffer1[PAL_MAX_FILE_AND_FOLDER_LENGTH];
+    char rootPathBuffer2[PAL_MAX_FILE_AND_FOLDER_LENGTH];
+    char *buffer1;
+    char *buffer2;
     int i = 0;
     size_t numOfBytes;
+
 /*#1*/
     //---------------- INIT TESTS----------------------------//
+
+    // code expects to bufferX to have at least PAL_MAX_FILE_AND_FOLDER_LENGTH and TEST_BYTES_TO_WRITE
+    // bytes available, so it needs to be calculated on the fly.
+    const size_t test_buffer_size = (PAL_MAX_FILE_AND_FOLDER_LENGTH > TEST_BYTES_TO_WRITE) ? PAL_MAX_FILE_AND_FOLDER_LENGTH : TEST_BYTES_TO_WRITE;
+
+    buffer1 = malloc(test_buffer_size);
+    TEST_ASSERT_NOT_NULL(buffer1);
+
+    buffer2 = malloc(test_buffer_size);
+    TEST_ASSERT_NOT_NULL(buffer2);
+
     memset(rootPathBuffer1, '1', PAL_MAX_FILE_AND_FOLDER_LENGTH);
-    memset(rootPathBuffer2, '1', PAL_MAX_FILE_AND_FOLDER_LENGTH);
+    memset(rootPathBuffer2, '2', PAL_MAX_FILE_AND_FOLDER_LENGTH);
+    memset(buffer1, '1', test_buffer_size);
+    memset(buffer2, '2', test_buffer_size);
     //----------------END INIT TESTS-------------------------//
+
 
 /*#2*/
     status = pal_fsMkDir(addRootToPath(TEST_DIR,rootPathBuffer1,storageId)); //Create Directory
@@ -552,7 +595,7 @@ void FilesTests(pal_fsStorageID_t storageId)
         TEST_ASSERT_EQUAL(PAL_SUCCESS, status);
 
 /*#6*/
-        status =  pal_fsFwrite(&g_fd1, (void *)rootPathBuffer1, TEST_BYTES_TO_WRITE, &numOfBytes);
+        status =  pal_fsFwrite(&g_fd1, (void *)buffer1, test_buffer_size, &numOfBytes);
         TEST_ASSERT_EQUAL(PAL_SUCCESS, status);
 
 /*#7*/
@@ -624,6 +667,9 @@ void FilesTests(pal_fsStorageID_t storageId)
 
     status = pal_fsCpFolder(addRootToPath("aaaaa", rootPathBuffer1, storageId), addRootToPath("bbbb" ,rootPathBuffer2,storageId)); //copy from not existing dir
     TEST_ASSERT_EQUAL(PAL_ERR_FS_NO_PATH, status);
+
+    free(buffer1);
+    free(buffer2);
 }
 
 TEST(pal_fileSystem, FilesTests)

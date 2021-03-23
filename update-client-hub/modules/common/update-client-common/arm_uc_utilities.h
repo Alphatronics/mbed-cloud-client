@@ -19,7 +19,7 @@
 #ifndef ARM_UPDATE_COMMON_UTILITIES_H
 #define ARM_UPDATE_COMMON_UTILITIES_H
 
-#include "update-client-common/arm_uc_types.h"
+#include "update-client-common/arm_uc_types_internal.h"
 #include "update-client-common/arm_uc_error.h"
 #include <string.h>
 #include <stdbool.h>
@@ -90,48 +90,6 @@ uint32_t arm_uc_str2uint32(const uint8_t *buffer,
                            bool *success);
 
 /**
- * @brief Calculate CRC 32
- *
- * @param buffer Input array.
- * @param length Length of array in bytes.
- *
- * @return 32 bit CRC.
- */
-uint32_t arm_uc_crc32(const uint8_t *buffer, uint32_t length);
-
-/**
- * @brief Parse 4 byte array into uint32_t
- *
- * @param input 4 byte array.
- * @return uint32_t
- */
-uint32_t arm_uc_parse_uint32(const uint8_t *input);
-
-/**
- * @brief Parse 8 byte array into uint64_t
- *
- * @param input 8 byte array.
- * @return uint64_t
- */
-uint64_t arm_uc_parse_uint64(const uint8_t *input);
-
-/**
- * @brief Write uint32_t to array.
- *
- * @param buffer Pointer to buffer.
- * @param value Value to be written.
- */
-void arm_uc_write_uint32(uint8_t *buffer, uint32_t value);
-
-/**
- * @brief Write uint64_t to array.
- *
- * @param buffer Pointer to buffer.
- * @param value Value to be written.
- */
-void arm_uc_write_uint64(uint8_t *buffer, uint64_t value);
-
-/**
  * @brief Do a shallow copy of a buffer.
  * @details Copies each field of a buffer from `src` to `dest`. This creates another reference to the buffer that
  *          backs `src` and drops any reference to a buffer that backs `dest`.
@@ -156,7 +114,7 @@ static inline void ARM_UC_buffer_shallow_copy(arm_uc_buffer_t *dest, arm_uc_buff
  * @param[in] src Pointer to a buffer that references the data to copy into the destination memory
  * @retval MFST_ERR_SIZE when the source size is larger than the destination's maximum size
  * @retval MFST_ERR_NULL_PTR when any expected pointer is NULL
- * @retval MFST_ERR_NONE on success
+ * @retval ERR_NONE on success
  */
 static inline arm_uc_error_t ARM_UC_buffer_deep_copy(arm_uc_buffer_t *dest, arm_uc_buffer_t *src)
 {
@@ -184,9 +142,19 @@ static inline arm_uc_error_t ARM_UC_buffer_deep_copy(arm_uc_buffer_t *dest, arm_
     return retval;
 }
 
-uint32_t ARM_UC_BinCompareCT(const arm_uc_buffer_t *a, const arm_uc_buffer_t *b);
 uint8_t *ARM_UC_Base64Enc(uint8_t *buf, const uint32_t size, const arm_uc_buffer_t *bin);
 void ARM_UC_Base64Dec(arm_uc_buffer_t *bin, const uint32_t size, const uint8_t *buf);
+
+/**
+ * @brief Calculate what is the length of string needed to contain full HTTP/COAP URI for download
+ * @details Calculation includes uri->size (size of ptr which is server address only in this case), uri->path (filename)
+ *          and length of SCHEME-string (https:// or coaps://)
+
+ *
+ * @param[in] uri The URI -structure which has been already parsed in arm_uc_str2uri
+ * @return  length of char* buffer needed for everything in URI. If scheme is not supported return 0
+ */
+size_t arm_uc_calculate_full_uri_length(const arm_uc_uri_t *uri);
 
 #ifdef __cplusplus
 }

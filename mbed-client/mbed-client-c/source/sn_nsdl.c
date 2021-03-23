@@ -34,6 +34,7 @@
 #endif
 
 #include <string.h>
+#include <assert.h>
 
 #include "ns_types.h"
 #include "sn_nsdl.h"
@@ -71,15 +72,11 @@
 #define SN_NSDL_EP_REGISTER_MESSAGE     1
 #define SN_NSDL_EP_UPDATE_MESSAGE       2
 
-#ifdef YOTTA_CFG_DISABLE_OBS_FEATURE
-#define COAP_DISABLE_OBS_FEATURE YOTTA_CFG_DISABLE_OBS_FEATURE
-#elif defined MBED_CONF_MBED_CLIENT_COAP_DISABLE_OBS_FEATURE
+#if defined MBED_CONF_MBED_CLIENT_COAP_DISABLE_OBS_FEATURE
 #define COAP_DISABLE_OBS_FEATURE MBED_CONF_MBED_CLIENT_COAP_DISABLE_OBS_FEATURE
 #endif
 
-#ifdef YOTTA_CFG_DISABLE_BOOTSTRAP_FEATURE
-#define MBED_CLIENT_DISABLE_BOOTSTRAP_FEATURE YOTTA_CFG_DISABLE_BOOTSTRAP_FEATURE
-#elif defined MBED_CONF_MBED_CLIENT_DISABLE_BOOTSTRAP_FEATURE
+#if defined MBED_CONF_MBED_CLIENT_DISABLE_BOOTSTRAP_FEATURE
 #define MBED_CLIENT_DISABLE_BOOTSTRAP_FEATURE MBED_CONF_MBED_CLIENT_DISABLE_BOOTSTRAP_FEATURE
 #endif
 
@@ -126,7 +123,7 @@ static bool             validate(uint8_t* ptr, uint32_t len, char illegalChar);
 static bool             sn_nsdl_check_uint_overflow(uint16_t resource_size, uint16_t param_a, uint16_t param_b);
 static void             remove_previous_block_data(struct nsdl_s *handle, sn_nsdl_addr_s *src_ptr, const uint32_t block_number);
 static bool             update_last_block_data(struct nsdl_s *handle, sn_coap_hdr_s *coap_packet_ptr, bool block1);
-#if defined(FEA_TRACE_SUPPORT) || MBED_CONF_MBED_TRACE_ENABLE || YOTTA_CFG_MBED_TRACE || (defined(YOTTA_CFG) && !defined(NDEBUG))
+#if MBED_CONF_MBED_TRACE_ENABLE
 static const char*      sn_nsdl_coap_status_description(sn_coap_status_e status);
 static const char*      sn_nsdl_coap_message_code_desc(int msg_code);
 static const char*      sn_nsdl_coap_message_type_desc(int msg_type);
@@ -234,6 +231,11 @@ uint16_t sn_nsdl_register_endpoint(struct nsdl_s *handle,
     if (endpoint_info_ptr == NULL || handle == NULL) {
         return 0;
     }
+
+    // Clear any leftovers from previous registration or bootstrap
+    sn_nsdl_clear_coap_sent_blockwise_messages(handle);
+    sn_nsdl_clear_coap_received_blockwise_messages(handle);
+    sn_nsdl_clear_coap_resending_queue(handle);
 
     /*** Build endpoint register message ***/
 
@@ -397,11 +399,11 @@ int32_t sn_nsdl_update_registration(struct nsdl_s *handle, uint8_t *lt_ptr, uint
 
     /* Check parameters */
     if (handle == NULL) {
-        return 0;
+        return -1;
     }
 
     if (!sn_nsdl_is_ep_registered(handle)){
-        return 0;
+        return -1;
     }
 
     memset(&temp_parameters, 0, sizeof(sn_nsdl_ep_parameters_s));
@@ -419,7 +421,7 @@ int32_t sn_nsdl_update_registration(struct nsdl_s *handle, uint8_t *lt_ptr, uint
     /* Allocate memory for header struct */
     register_message_ptr = sn_coap_parser_alloc_message(handle->grs->coap);
     if (register_message_ptr == NULL) {
-        return 0;
+        return -2;
     }
 
     /* Fill message fields -> confirmable post to specified NSP path */
@@ -432,7 +434,7 @@ int32_t sn_nsdl_update_registration(struct nsdl_s *handle, uint8_t *lt_ptr, uint
         register_message_ptr->uri_path_ptr  =   handle->sn_nsdl_alloc(register_message_ptr->uri_path_len);
         if (!register_message_ptr->uri_path_ptr) {
             sn_coap_parser_release_allocated_coap_msg_mem(handle->grs->coap, register_message_ptr);
-            return 0;
+            return -2;
         }
 
         temp_ptr = register_message_ptr->uri_path_ptr;
@@ -445,7 +447,7 @@ int32_t sn_nsdl_update_registration(struct nsdl_s *handle, uint8_t *lt_ptr, uint
         register_message_ptr->uri_path_ptr  =   handle->sn_nsdl_alloc(register_message_ptr->uri_path_len);
         if (!register_message_ptr->uri_path_ptr) {
             sn_coap_parser_release_allocated_coap_msg_mem(handle->grs->coap, register_message_ptr);
-            return 0;
+            return -2;
         }
 
         temp_ptr = register_message_ptr->uri_path_ptr;
@@ -467,7 +469,7 @@ int32_t sn_nsdl_update_registration(struct nsdl_s *handle, uint8_t *lt_ptr, uint
     /* Allocate memory for the extended options list */
     if (sn_coap_parser_alloc_options(handle->grs->coap, register_message_ptr) == NULL) {
         sn_coap_parser_release_allocated_coap_msg_mem(handle->grs->coap, register_message_ptr);
-        return 0;
+        return -2;
     }
 
     /* Fill Uri-query options */
@@ -477,7 +479,7 @@ int32_t sn_nsdl_update_registration(struct nsdl_s *handle, uint8_t *lt_ptr, uint
     if (handle->ep_information_ptr->ds_register_mode == REGISTER_WITH_RESOURCES) {
         if (sn_nsdl_build_registration_body(handle, register_message_ptr, 1) == SN_NSDL_FAILURE) {
             sn_coap_parser_release_allocated_coap_msg_mem(handle->grs->coap, register_message_ptr);
-            return 0;
+            return -2;
         }
     }
 
@@ -498,6 +500,11 @@ int32_t sn_nsdl_update_registration(struct nsdl_s *handle, uint8_t *lt_ptr, uint
     handle->sn_nsdl_free(register_message_ptr->payload_ptr);
 
     sn_coap_parser_release_allocated_coap_msg_mem(handle->grs->coap, register_message_ptr);
+
+    if (message_id == 0) {
+        // Failure when sending
+        return -2;
+    }
 
     return message_id;
 }
@@ -1030,7 +1037,7 @@ int8_t sn_nsdl_build_registration_body(struct nsdl_s *handle, sn_coap_hdr_s *mes
             if (!resource_temp_ptr->always_publish && updating_registeration && resource_temp_ptr->registered == SN_NDSL_RESOURCE_REGISTERED) {
                 resource_temp_ptr = sn_grs_get_next_resource(handle->grs, resource_temp_ptr);
                 continue;
-            } else {
+            } else if (resource_temp_ptr->registered != SN_NDSL_RESOURCE_DELETE) {
                 resource_temp_ptr->registered = SN_NDSL_RESOURCE_REGISTERED;
             }
 
@@ -1052,6 +1059,10 @@ int8_t sn_nsdl_build_registration_body(struct nsdl_s *handle, sn_coap_hdr_s *mes
             *temp_ptr++ = '>';
 
             /* Resource attributes */
+            if (resource_temp_ptr->registered == SN_NDSL_RESOURCE_DELETE) {
+                *temp_ptr++ = ';';
+                *temp_ptr++ = 'd';
+            }
 #ifndef RESOURCE_ATTRIBUTES_LIST
 #ifndef DISABLE_RESOURCE_TYPE
             size_t resource_type_len = 0;
@@ -1236,6 +1247,9 @@ static uint16_t sn_nsdl_calculate_registration_body_size(struct nsdl_s *handle, 
             }
 
             /* Count lengths of the attributes */
+            if (resource_temp_ptr->registered == SN_NDSL_RESOURCE_DELETE) {
+                return_value += 2;
+            }
 #ifndef RESOURCE_ATTRIBUTES_LIST
 #ifndef DISABLE_RESOURCE_TYPE
             /* Resource type parameter */
@@ -2360,7 +2374,7 @@ bool sn_nsdl_remove_resource_attribute(sn_nsdl_static_resource_parameters_s *par
 
 void sn_nsdl_print_coap_data(sn_coap_hdr_s *coap_header_ptr, bool outgoing)
 {
-#if defined(FEA_TRACE_SUPPORT) || MBED_CONF_MBED_TRACE_ENABLE || YOTTA_CFG_MBED_TRACE || (defined(YOTTA_CFG) && !defined(NDEBUG))
+#if MBED_CONF_MBED_TRACE_ENABLE
     if (!coap_header_ptr) {
         return;
     }
@@ -2404,7 +2418,7 @@ void sn_nsdl_print_coap_data(sn_coap_hdr_s *coap_header_ptr, bool outgoing)
 
     if (coap_header_ptr->options_list_ptr) {
         if (coap_header_ptr->options_list_ptr->etag_ptr && coap_header_ptr->options_list_ptr->etag_len > 0) {
-            tr_info("E-tag:\t%.*s", coap_header_ptr->options_list_ptr->etag_len, coap_header_ptr->options_list_ptr->etag_ptr);
+            tr_info("E-tag:\t%s", tr_array(coap_header_ptr->options_list_ptr->etag_ptr, coap_header_ptr->options_list_ptr->etag_len));
         }
         if (coap_header_ptr->options_list_ptr->proxy_uri_ptr && coap_header_ptr->options_list_ptr->proxy_uri_len > 0) {
             tr_info("Proxy uri:\t%.*s", coap_header_ptr->options_list_ptr->proxy_uri_len, coap_header_ptr->options_list_ptr->proxy_uri_ptr);
@@ -2464,7 +2478,7 @@ void sn_nsdl_print_coap_data(sn_coap_hdr_s *coap_header_ptr, bool outgoing)
 #endif
 }
 
-#if defined(FEA_TRACE_SUPPORT) || MBED_CONF_MBED_TRACE_ENABLE || YOTTA_CFG_MBED_TRACE || (defined(YOTTA_CFG) && !defined(NDEBUG))
+#if MBED_CONF_MBED_TRACE_ENABLE
 const char *sn_nsdl_coap_status_description(sn_coap_status_e status)
 {
     switch(status) {
@@ -2650,4 +2664,26 @@ extern uint8_t sn_nsdl_get_retransmission_count(struct nsdl_s *handle)
     (void) handle;
     return 0;
 #endif
+}
+
+int32_t sn_nsdl_send_coap_ping(struct nsdl_s *handle)
+{
+    assert(handle);
+    assert(handle->grs);
+
+    sn_coap_hdr_s coap_ping = {0};
+    int32_t         return_msg_id = 0;
+
+    /* Fill header */
+    coap_ping.msg_type = COAP_MSG_TYPE_CONFIRMABLE;
+    coap_ping.msg_code = COAP_MSG_CODE_EMPTY;
+    coap_ping.content_format = COAP_CT_NONE;
+
+    /* Send message */
+    return_msg_id = sn_nsdl_send_coap_message(handle, &handle->server_address, &coap_ping);
+    if (return_msg_id >= SN_NSDL_SUCCESS) {
+        return_msg_id = coap_ping.msg_id;
+    }
+
+    return return_msg_id;
 }

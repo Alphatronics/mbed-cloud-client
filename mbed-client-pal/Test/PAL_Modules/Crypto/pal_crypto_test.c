@@ -1,26 +1,32 @@
-/*******************************************************************************
- * Copyright 2016, 2017 ARM Ltd.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *******************************************************************************/
+// ----------------------------------------------------------------------------
+// Copyright 2016-2019 ARM Ltd.
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ----------------------------------------------------------------------------
 
 #include "pal.h"
 #include "pal_Crypto.h"
 #include "unity.h"
 #include "unity_fixture.h"
 #include "pal_crypto_test_data.h"
-#include "string.h"
-#include "time.h"
+#include "ssl.h"
+#if !PAL_USE_HW_TRNG
+#include "pal_plat_entropy.h"
+#endif
+#include <string.h>
+#include <time.h>
 
 
 TEST_GROUP(pal_crypto);
@@ -30,6 +36,18 @@ TEST_SETUP(pal_crypto)
     pal_init();
     palStatus_t status = PAL_SUCCESS;
     uint64_t currentTime = 1512572014; //GMT: Wed, 06 Dec 2017 14:53:33 GMT
+
+#if !PAL_USE_HW_TRNG
+    // If no hardware trng - entropy must be injected for random to work
+    uint8_t entropy_buf[48] = { 0 };
+    status = pal_osEntropyInject(entropy_buf, sizeof(entropy_buf));
+    TEST_ASSERT(status == PAL_SUCCESS || status == PAL_ERR_ENTROPY_EXISTS);
+#endif
+
+    // Initialize the time module
+    status = pal_initTime();
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+
     status = pal_osSetTime(currentTime);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 }
@@ -638,13 +656,26 @@ TEST(pal_crypto, X509_Parse)
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_CERT_PARSING_FAILED, result);
     /*#4*/
     result = pal_x509CertParse(ctx, (unsigned char*)testdata_x509_Sha512, sizeof(testdata_x509_Sha512));
+    // If SHA512 is supported by the application/platform, we don't want tests (#4 and #5) to fail because of that.
+    // Perhaps the test material should be changed to use less recent/used algorithm to get the PAL_ERR_INVALID_MD_TYPE
+    // path executed.
+#if defined (MBEDTLS_SHA512_C)
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+#else
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_MD_TYPE, result);
+#endif
     /*#5*/
     result = pal_x509CertParse(ctx, (unsigned char*)testdata_x509_Curve512r1, sizeof(testdata_x509_Curve512r1));
+#if defined (MBEDTLS_SHA512_C)
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+#else
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_NOT_SUPPORTED_CURVE, result);
+#endif
     /*#6*/
     result = pal_x509Free(&ctx);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_ENABLE_X509 not set");
 #endif
 }
 
@@ -790,6 +821,8 @@ TEST(pal_crypto, X509_ReadAttributes)
     /*#20*/
     result = pal_x509Free(&ctx);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_ENABLE_X509 not set");
 #endif
 }
     
@@ -859,6 +892,8 @@ TEST(pal_crypto, X509_Verify)
             TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
         }
     }
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_ENABLE_X509 not set");
 #endif
 }
 
@@ -1090,7 +1125,8 @@ TEST(pal_crypto, CSR)
     /*#2*/
     result = pal_ECGroupFree(&grp);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
-
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_ENABLE_X509 not set");
 #endif
 }
 
@@ -1172,7 +1208,8 @@ TEST(pal_crypto, X509_tbs_hash)
 
     status = pal_x509Free(&signer);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_ENABLE_X509 not set");
 #endif
 }
 

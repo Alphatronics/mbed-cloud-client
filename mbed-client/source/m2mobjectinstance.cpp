@@ -451,7 +451,7 @@ sn_coap_hdr_s* M2MObjectInstance::handle_get_request(nsdl_s *nsdl,
 
     if (received_coap_header) {
         // process the GET if we have registered a callback for it
-        if ((operation() & SN_GRS_GET_ALLOWED) != 0) {
+        if ((operation() & M2MBase::GET_ALLOWED) != 0) {
             if (coap_response) {
                 bool content_type_present = false;
                 bool is_content_type_supported = true;
@@ -495,46 +495,8 @@ sn_coap_hdr_s* M2MObjectInstance::handle_get_request(nsdl_s *nsdl,
                         }
 
                         if (received_coap_header->options_list_ptr) {
-                            if (received_coap_header->options_list_ptr->observe != -1) {
-                                if (is_observable()) {
-                                    uint32_t number = 0;
-                                    uint8_t observe_option = 0;
-                                    observe_option = received_coap_header->options_list_ptr->observe;
-                                    if (START_OBSERVATION == observe_option) {
-                                        // If the observe length is 0 means register for observation.
-                                        if (received_coap_header->options_list_ptr->observe != -1) {
-                                            number = received_coap_header->options_list_ptr->observe;
-                                        }
-
-                                        // If the observe value is 0 means register for observation.
-                                        if (number == 0) {
-                                            tr_info("M2MObjectInstance::handle_get_request - put resource under observation");
-                                            set_under_observation(true,observation_handler);
-                                            add_observation_level(M2MBase::OI_Attribute);
-                                            send_notification_delivery_status(*this, NOTIFICATION_STATUS_SUBSCRIBED);
-                                            send_message_delivery_status(*this, M2MBase::MESSAGE_STATUS_SUBSCRIBED, M2MBase::NOTIFICATION);
-                                            if (coap_response->options_list_ptr) {
-                                                coap_response->options_list_ptr->observe = observation_number();
-                                            }
-                                        }
-
-                                        if (received_coap_header->token_ptr) {
-                                            set_observation_token(received_coap_header->token_ptr,
-                                                                  received_coap_header->token_len);
-                                        }
-
-                                    } else if (STOP_OBSERVATION == observe_option) {
-                                        tr_info("M2MObjectInstance::handle_get_request - stops observation");
-                                        set_under_observation(false,NULL);
-                                        remove_observation_level(M2MBase::OI_Attribute);
-                                        send_notification_delivery_status(*this, NOTIFICATION_STATUS_UNSUBSCRIBED);
-                                        send_message_delivery_status(*this, M2MBase::MESSAGE_STATUS_UNSUBSCRIBED, M2MBase::NOTIFICATION);
-                                    }
-                                    msg_code = COAP_MSG_CODE_RESPONSE_CONTENT;
-                                }
-                                else {
-                                    msg_code = COAP_MSG_CODE_RESPONSE_METHOD_NOT_ALLOWED;
-                                }
+                            if(received_coap_header->options_list_ptr->observe != -1) {
+                                handle_observation(nsdl, *received_coap_header, *coap_response, observation_handler, msg_code);
                             }
                         }
                     } else {
@@ -595,7 +557,7 @@ sn_coap_hdr_s* M2MObjectInstance::handle_put_request(nsdl_s *nsdl,
                 }
                 free(query);
             }
-        } else if ((operation() & SN_GRS_PUT_ALLOWED) != 0) {
+        } else if ((operation() & M2MBase::PUT_ALLOWED) != 0) {
             if(!content_type_present &&
                (M2MBase::coap_content_type() == COAP_CONTENT_OMA_TLV_TYPE ||
                 M2MBase::coap_content_type() == COAP_CONTENT_OMA_TLV_TYPE_OLD)) {
@@ -663,7 +625,7 @@ sn_coap_hdr_s* M2MObjectInstance::handle_post_request(nsdl_s *nsdl,
                                                            received_coap_header,
                                                            msg_code);
     if(received_coap_header) {
-        if ((operation() & SN_GRS_POST_ALLOWED) != 0) {
+        if ((operation() & M2MBase::POST_ALLOWED) != 0) {
             uint16_t coap_content_type = 0;
             bool content_type_present = false;
             if(received_coap_header->content_format != COAP_CT_NONE) {

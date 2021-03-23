@@ -71,7 +71,7 @@ ccs_status_e ccs_check_item(const char* key, ccs_item_type_e item_type)
     }
 
     size_t real_size = 0;
-    kcm_status_e kcm_status = kcm_item_get_data_size((const uint8_t*)key, strlen(key), item_type, &real_size);
+    kcm_status_e kcm_status = kcm_item_get_data_size((const uint8_t*)key, strlen(key), (kcm_item_type_e)item_type, &real_size);
     if (kcm_status == KCM_STATUS_ITEM_NOT_FOUND) {
         return CCS_STATUS_KEY_DOESNT_EXIST;
     }
@@ -88,7 +88,7 @@ ccs_status_e ccs_delete_item(const char* key, ccs_item_type_e item_type)
     ccs_status_e status = ccs_check_item(key, item_type);
     if (status == CCS_STATUS_KEY_DOESNT_EXIST) {
         // No need to call delete as item does not exist.
-        tr_debug("CloudClientStorage::ccs_delete_item [%s], type [%d] does not exist.", key, item_type);
+        tr_debug("CloudClientStorage::ccs_delete_item [%s], type [%d] does not exist. Not deleting anything.", key, item_type);
         return CCS_STATUS_SUCCESS;
     } else if (status == CCS_STATUS_ERROR) {
         return CCS_STATUS_ERROR;
@@ -98,10 +98,10 @@ ccs_status_e ccs_delete_item(const char* key, ccs_item_type_e item_type)
     tr_debug("CloudClientStorage::ccs_delete_item [%s], type [%d] ", key, item_type);
     kcm_status_e kcm_status = kcm_item_delete((const uint8_t*)key,
                                   strlen(key),
-                                  item_type);
+                                  (kcm_item_type_e)item_type);
 
     if (kcm_status != KCM_STATUS_SUCCESS) {
-        tr_debug("CloudClientStorage::ccs_delete_item [%s] kcm get error %d", key, kcm_status);
+        tr_debug("CloudClientStorage::ccs_delete_item [%s] kcm error %d", key, kcm_status);
         return CCS_STATUS_ERROR;
     }
 
@@ -120,11 +120,11 @@ ccs_status_e ccs_item_size(const char* key, size_t* size_out, ccs_item_type_e it
     // Get kcm item size
     kcm_status_e kcm_status = kcm_item_get_data_size((const uint8_t*)key,
                                          strlen(key),
-                                         item_type,
+                                         (kcm_item_type_e)item_type,
                                          size_out);
 
     if (kcm_status != KCM_STATUS_SUCCESS) {
-        tr_debug("CloudClientStorage::ccs_item_size [%s] kcm get error %d", key, kcm_status);
+        tr_debug("CloudClientStorage::ccs_item_size [%s] kcm error %d", key, kcm_status);
         return CCS_STATUS_ERROR;
     }
 
@@ -146,13 +146,13 @@ ccs_status_e ccs_get_item(const char* key,
 
     kcm_status_e kcm_status = kcm_item_get_data((const uint8_t*)key,
                                     strlen(key),
-                                    item_type,
+                                    (kcm_item_type_e)item_type,
                                     buffer,
                                     buffer_size,
                                     value_length);
 
     if (kcm_status != KCM_STATUS_SUCCESS) {
-        tr_debug("CloudClientStorage::ccs_get_item [%s] kcm get error %d", key, kcm_status);
+        tr_debug("CloudClientStorage::ccs_get_item [%s] kcm error %d", key, kcm_status);
         return CCS_STATUS_ERROR;
     }
 
@@ -173,7 +173,7 @@ ccs_status_e ccs_set_item(const char* key,
 
     kcm_status_e kcm_status = kcm_item_store((const uint8_t*)key,
                                  strlen(key),
-                                 item_type,
+                                 (kcm_item_type_e)item_type,
                                  false,
                                  buffer,
                                  buffer_size,
@@ -184,7 +184,7 @@ ccs_status_e ccs_set_item(const char* key,
         return CCS_STATUS_VALIDATION_FAIL;
     }
     else if (kcm_status != KCM_STATUS_SUCCESS) {
-        tr_debug("CloudClientStorage::ccs_set_item kcm [%s] get error %d", key, kcm_status);
+        tr_debug("CloudClientStorage::ccs_set_item kcm [%s] error %d", key, kcm_status);
         return CCS_STATUS_ERROR;
     }
 
@@ -237,7 +237,6 @@ ccs_status_e ccs_get_next_cert_chain(void *chain_handle, void *cert_data, size_t
 
     if (kcm_status != KCM_STATUS_SUCCESS) {
         tr_error("CloudClientStorage::ccs_get_next_cert_chain - get_next_size error %d", kcm_status);
-        data_size = 0;
         return CCS_STATUS_ERROR;
     }
 
@@ -246,7 +245,6 @@ ccs_status_e ccs_get_next_cert_chain(void *chain_handle, void *cert_data, size_t
 
     if (kcm_status != KCM_STATUS_SUCCESS) {
         tr_error("CloudClientStorage::ccs_get_next_cert_chain - get_next_data error %d", kcm_status);
-        data_size = 0;
         return CCS_STATUS_ERROR;
     } else {
         return CCS_STATUS_SUCCESS;
@@ -292,7 +290,7 @@ ccs_status_e ccs_parse_cert_chain_and_store(const uint8_t *cert_chain_name,
     uint8_t chain_length = *ptr++;
     ccs_status_e success = CCS_STATUS_SUCCESS;
     kcm_cert_chain_handle chain_handle;
-    kcm_status_e status = KCM_STATUS_ERROR;
+    kcm_status_e status;
 
     // Check overflow
     if (ptr - cert_chain_data > cert_chain_data_len) {
@@ -344,11 +342,11 @@ ccs_status_e ccs_parse_cert_chain_and_store(const uint8_t *cert_chain_name,
                 break;
             }
         }
-    }
 
-    status = kcm_cert_chain_close(chain_handle);
-    if (status != KCM_STATUS_SUCCESS) {
-        success = CCS_STATUS_ERROR;
+        status = kcm_cert_chain_close(chain_handle);
+        if (status != KCM_STATUS_SUCCESS) {
+            success = CCS_STATUS_ERROR;
+        }
     }
 
     if (success != CCS_STATUS_SUCCESS) {

@@ -14,14 +14,19 @@
  * limitations under the License.
  *******************************************************************************/
 
+// Needed for PRIu64 on FreeRTOS
+#include <stdio.h>
+
 #include "pal.h"
 #include "unity.h"
 #include "unity_fixture.h"
 #include "pal_rtos_test_utils.h"
-#include <string.h>
-#include <stdlib.h>
 #include "sotp.h"
 #include "pal_plat_rtos.h"
+#include "test_runners.h"
+
+#include <string.h>
+#include <stdlib.h>
 
 #define TRACE_GROUP "PAL"
 
@@ -32,7 +37,11 @@ TEST_GROUP(pal_rtos);
 //However, you should usually avoid this.
 //extern int Counter;
 threadsArgument_t g_threadsArg = {0};
-timerArgument_t g_timerArgs = {0};
+
+// Note: this struct is accessed from the test code thread and timer callbacks
+// without any synchronization, so beware.
+volatile timerArgument_t g_timerArgs = {0};
+
 palMutexID_t mutex1 = NULLPTR;
 palMutexID_t mutex2 = NULLPTR;
 palSemaphoreID_t semaphore1 = NULLPTR;
@@ -40,9 +49,11 @@ palRecursiveMutexParam_t* recursiveMutexData = NULL;
 #define PAL_RUNNING_TEST_TIME   5  //estimation on length of test in seconds
 #define PAL_TEST_HIGH_RES_TIMER 100
 #define PAL_TEST_HIGH_RES_TIMER2 10
-#define PAL_TEST_PERCENTAGE_LOW 95
-#define PAL_TEST_PERCENTAGE_HIGH 105
+#define PAL_TEST_PERCENTAGE_TIMER_ERROR 10
 #define PAL_TEST_PERCENTAGE_HUNDRED  100
+#define PAL_TEST_TIME_SECOND 1000
+
+#define PAL_DELAY_RUN_LOOPS 10
 
 //Forward declarations
 void palRunThreads(void);
@@ -80,6 +91,175 @@ TEST_TEAR_DOWN(pal_rtos)
         recursiveMutexData = NULL;
     }
     pal_destroy();
+}
+
+#define TEST_OUTPUT_32_1 "u32 1: 123456789"
+#define TEST_OUTPUT_32_2 "s32 2: -123456789"
+
+#define TEST_OUTPUT_INT_1 "int 1: 12345"
+
+#define TEST_OUTPUT_64_1 "u64 1: 123456789"
+#define TEST_OUTPUT_64_2 "u64 2: 18446744073709551615"
+#define TEST_OUTPUT_64_3 "s64 1: -123456789"
+#define TEST_OUTPUT_64_4 "s64 2: -9223372036854775801"
+
+/*! \brief Sanity check of the snprintf() from the libc/system
+ * Fails if the snprintf() does not support 64b formatter (%lld or %llu)
+ *
+ * | # |    Step                               |   Expected  |
+ * |---|---------------------------------------|-------------|
+ * |  1| snprintf("%PRIu32)                    | success     |
+ * |  2| snprintf("%PRId32)                    | success     |
+ * |  3| snprintf("%d)                         | success     |
+ * |  4| snprintf("%llu) (32b value)           | success     |
+ * |  5| snprintf("%llu) (64b value)           | success     |
+ * |  6| snprintf("%PRIu64) (32b value)        | success     |
+ * |  7| snprintf("%PRIu64) (64b value)        | success     |
+ * |  8| snprintf("%lld) (32b value)           | success     |
+ * |  9| snprintf("%lld) (64b value)           | success     |
+ * | 10| snprintf("%PRId64) (32b value)        | success     |
+ * | 11| snprintf("%PRId64) (64b value)        | success     |
+ */
+
+TEST(pal_rtos, BasicSnprintfTestInt)
+{
+    char output[64];
+
+    int result;
+
+    uint32_t test32u;
+    int32_t test32s;
+
+    uint64_t test64u;
+    int64_t test64s;
+
+    // first test with 32b variables
+    /*#1*/
+    test32u = 123456789;
+    result = snprintf(output, sizeof(output), "u32 1: %" PRIu32, test32u);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_32_1), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_32_1, output);
+
+    /*#2*/
+    test32s = 0 - 123456789;
+    result = snprintf(output, sizeof(output), "s32 2: %" PRId32, test32s);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_32_2), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_32_2, output);
+
+    /*#3*/
+    // Note: this assumes just that int is at least 16 bits, which should be somewhat safe
+    int testInt = 12345;
+    result = snprintf(output, sizeof(output), "int 1: %d", testInt);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_INT_1), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_INT_1, output);
+
+    /*#4*/
+    // Then with 64b variables, hard coded, non standard %llu and %lld.
+    // This part is a bit questionable, should it be ran or actually the code
+    // which uses the %llu and expects it to have 64b fixed?!
+    test64u = UINT64_C(123456789);
+    result = snprintf(output, sizeof(output), "u64 1: %llu", (long long unsigned)test64u);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_64_1), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_64_1, output);
+
+    /*#5*/
+    test64u = UINT64_C(18446744073709551615);
+    result = snprintf(output, sizeof(output), "u64 2: %llu", (long long unsigned)test64u);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_64_2), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_64_2, output);
+
+    /*#6*/
+    // the standard PRIu64 should work everywhere
+    test64u = UINT64_C(123456789);
+    result = snprintf(output, sizeof(output), "u64 1: %" PRIu64, test64u);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_64_1), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_64_1, output);
+
+    /*#7*/
+    test64u = UINT64_C(18446744073709551615);
+    result = snprintf(output, sizeof(output), "u64 2: %" PRIu64, test64u);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_64_2), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_64_2, output);
+
+    /*#8*/
+    // Then with 64b signed variables, hard coded, non standard %lld
+    // Again, this part is a bit questionable, should it be ran or actually the code
+    // which uses the %lld and expects it to have 64b fixed?!
+    test64s = INT64_C(-123456789);
+    result = snprintf(output, sizeof(output), "s64 1: %lld", (long long)test64s);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_64_3), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_64_3, output);
+
+    /*#9*/
+    // a value of INT64_MIN might also be used, but setting that portably would need use of INT64_C()
+    test64s = INT64_C(-9223372036854775801);
+    result = snprintf(output, sizeof(output), "s64 2: %lld", (long long)test64s);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_64_4), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_64_4, output);
+
+    /*#10*/
+    // the standard PRId64 should work everywhere
+    test64s = INT64_C(-123456789);
+    result = snprintf(output, sizeof(output), "s64 1: %" PRId64, test64s);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_64_3), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_64_3, output);
+
+    /*#11*/
+    test64s = INT64_C(-9223372036854775801);
+    result = snprintf(output, sizeof(output), "s64 2: %" PRId64, test64s);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_64_4), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_64_4, output);
+}
+
+#define TEST_OUTPUT_SIZE_1 "size_t 1: 123456789"
+#define TEST_OUTPUT_SIZE_2 "size_t 2: -123456789"
+
+/*! \brief Sanity check of the snprintf() from the libc/system
+ * Fails if the snprintf() does not support size_t/ssize_t formatter (%zu or %zd)
+ *
+ * | # |    Step                               |   Expected  |
+ * |---|---------------------------------------|-------------|
+ * | 1 | snprintf("%zu) (size_t/32b value)     | success     |
+ * | 2 | snprintf("%zd) (size_t/32b value)     | success     |
+ */
+TEST(pal_rtos, BasicSnprintfTestSize)
+{
+// The %zu and %zd are not supported by newlib nano used in Mbed OS and FreeRTOS,
+// so these tests need to be left out.
+// Note: __GNUC__ is also defined by ARMCC in "--gnu" mode, so it can not be used directly.
+#if (!(defined(TARGET_LIKE_MBED) && defined(TOOLCHAIN_GCC)) && !(defined(__FREERTOS__) && !defined(__CC_ARM)))
+    char output[64];
+
+    int result;
+
+    size_t testU;
+
+    // Note: if the environment has 64b size_t, the code should have bigger
+    // constant in use
+
+    testU = 123456789;
+
+    // Note: the newlib nano fails on these:
+
+    /*#1*/
+    result = snprintf(output, sizeof(output), "size_t 1: %zu", testU);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_SIZE_1), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_SIZE_1, output);
+
+    // Note: the ssize_t is not that universally available or used as size_t so
+    // this test is in comments.
+    /*#2*/
+#if 0
+    ssize_t testS;
+    testS = 0 - 123456789;
+
+    result = snprintf(output, sizeof(output), "size_t 2: %zd", testS);
+    TEST_ASSERT_EQUAL(strlen(TEST_OUTPUT_SIZE_2), result);
+    TEST_ASSERT_EQUAL_STRING(TEST_OUTPUT_SIZE_2, output);
+#endif
+#else
+    TEST_IGNORE_MESSAGE("Ignored, zu and zd not supported");
+#endif
 }
 
 /*! \brief Sanity check of the kernel system tick API.
@@ -153,8 +333,10 @@ TEST(pal_rtos, pal_osKernelSysMilliSecTick_Unity)
     TEST_ASSERT_TRUE(0 != tick);
     /*#2*/
     milliseconds = pal_osKernelSysMilliSecTick(tick);
-    TEST_ASSERT_EQUAL(microSec/1000, milliseconds);
-   
+
+    // Calculation in PAL might be done using integer values and therefore
+    // the result can be off by 1 millisecond due to rounding
+    TEST_ASSERT_INT_WITHIN(1, microSec/1000, milliseconds);
 }
 
 /*! \brief Verify that the tick frequency function returns a non-zero value.
@@ -240,9 +422,9 @@ TEST(pal_rtos, BasicTimeScenario)
     tick2 = pal_osKernelSysTick();
 
     /*#8*/
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     TEST_ASSERT_TRUE(tick1 != tick2);
     TEST_ASSERT_TRUE(tick2 > tick1);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
     /*#9*/
     tickDiff = tick2 - tick1;
@@ -255,6 +437,286 @@ TEST(pal_rtos, BasicTimeScenario)
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 }
 
+
+/*! \brief Test for basic long timing scenarios based on calls for the ticks and delay
+* functionality while verifying that results meet the defined deltas. In practice this
+* may be one of the first tests to run to get some baseline for timer accuracy measurements.
+*
+* | # |    Step                                                                 |   Expected  |
+* |---|-------------------------------------------------------------------------|-------------|
+* | 1 | Get the kernel `sysTick` value.                                         | PAL_SUCCESS |
+* | 2 | Get the kernel `millisecond` value.                                     | PAL_SUCCESS |
+* | 3 | start loop
+* | 4 | Get the kernel `sysTick` value.                                         | PAL_SUCCESS |
+* | 5 | Get the kernel `millisecond` value.                                     | PAL_SUCCESS |
+* | 6 | Delay for one second.                                                   | PAL_SUCCESS |
+* | 7 | Get the kernel `sysTick` value.                                         | PAL_SUCCESS |
+* | 8 | Get the kernel `millisecond` value.                                     | PAL_SUCCESS |
+* | 9 | Verify that `sysTick` diff for one second value is within error margin. | PAL_SUCCESS |
+* |10 | Verify that `ms` diff for one second value is within error margin.      | PAL_SUCCESS |
+* |11 | Continue loop
+* |12 | Get the kernel `sysTick` value.                                         | PAL_SUCCESS |
+* |13 | Get the kernel `millisecond` value.                                     | PAL_SUCCESS |
+* |14 | Verify that `sysTick` diff for loop duration is within error margin.    | PAL_SUCCESS |
+* |15 | Verify that `ms` diff for loop duration is within error margin.         | PAL_SUCCESS |
+*/
+TEST(pal_rtos, BasicDelayTime)
+{
+    palStatus_t status = PAL_SUCCESS;
+
+    uint64_t tickTestStart;
+    uint64_t tickTestEnd;
+    uint64_t msTestStart;
+    uint64_t msTestEnd;
+
+    uint64_t tickInLoopStart;
+    uint64_t tickInLoopEnd;
+
+    uint64_t msInLoopStart;
+    uint64_t msInLoopEnd;
+
+    uint64_t tickDiff;
+    uint64_t msDiff;
+
+    const uint64_t ticksPerSecond = pal_osKernelSysTickFrequency();
+
+    // Delay time can legally drift one 16th of a fraction (~6,25%) into one direction or another
+    const uint64_t tickLoopDiffAllowed = ticksPerSecond / 32;
+    const uint64_t msLoopDiffAllowed = 1000 / 32;
+
+    const uint64_t tickTestDiffAllowed = (ticksPerSecond * PAL_DELAY_RUN_LOOPS) / 16;
+    const uint64_t msTestDiffAllowed = (1000 * PAL_DELAY_RUN_LOOPS) / 16;
+
+    /*#1*/
+    tickTestStart = pal_osKernelSysTick();
+
+    /*#2*/
+    msTestStart = pal_osKernelSysMilliSecTick(tickTestStart);
+
+    /*#3*/
+
+    // Loop N times, one second per loop. Verify, that the timer values
+    // are somewhere in the correct ballpark and the more complex timer
+    // checks have hope to pass. Note: the times are evaluated in ticks
+    // and also converted to milliseconds to help in debugging (and to
+    // verify that the conversion actually works).
+    for (int i=1; i <= PAL_DELAY_RUN_LOOPS; i++) {
+
+        /*#4*/
+        tickInLoopStart = pal_osKernelSysTick();
+
+        /*#5*/
+        msInLoopStart = pal_osKernelSysMilliSecTick(tickInLoopStart);
+
+        /*#6*/
+        status = pal_osDelay(1000);
+
+        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+
+        /*#7*/
+        tickInLoopEnd = pal_osKernelSysTick();
+
+        /*#8*/
+        msInLoopEnd = pal_osKernelSysMilliSecTick(tickInLoopEnd);
+
+        tickDiff = tickInLoopEnd - tickInLoopStart;
+        msDiff = msInLoopEnd - msInLoopStart;
+
+        // XXX: This code is in comments to help in debugging the case when this
+        // test fails on new platform
+        /*
+        tr_info("tickDiff       : %llu", tickDiff);
+        tr_info("msDiff         : %llu", msDiff);
+
+        tr_info("tickInLoopStart: %llu", tickInLoopStart);
+        tr_info("tickInLoopEnd  : %llu", tickInLoopEnd);
+
+        tr_info("msInLoopStart  : %llu", msInLoopStart);
+        tr_info("msInLoopEnd    : %llu", msInLoopEnd);
+        */
+
+        /*#9*/
+        TEST_ASSERT_UINT64_WITHIN(tickLoopDiffAllowed, ticksPerSecond, tickDiff);
+
+        /*#10*/
+        TEST_ASSERT_UINT64_WITHIN(msLoopDiffAllowed, 1000, msDiff);
+
+        /*#11*/
+    }
+
+    /*#12*/
+    tickTestEnd = pal_osKernelSysTick();
+
+    /*#13*/
+    msTestEnd = pal_osKernelSysMilliSecTick(tickTestEnd);
+
+    tickDiff = tickTestEnd - tickTestStart;
+    msDiff = msTestEnd - msTestStart;
+
+    /*
+    tr_info("tickTestStart  : %llu", tickTestStart);
+    tr_info("msTestStart    : %llu", msTestStart);
+    tr_info("tickTestEnd    : %llu", tickTestEnd);
+    tr_info("msTestEnd      : %llu", msTestEnd);
+    */
+
+    /*#14*/
+    TEST_ASSERT_UINT64_WITHIN(tickTestDiffAllowed, (ticksPerSecond*PAL_DELAY_RUN_LOOPS), tickDiff);
+
+    /*#15*/
+    TEST_ASSERT_UINT64_WITHIN(msTestDiffAllowed, (1000*PAL_DELAY_RUN_LOOPS), msDiff);
+}
+
+/*! \brief Test single-shot timer accuracy against system clock.
+ *
+* | # |    Step                                                                                          |   Expected                     |
+* |---|--------------------------------------------------------------------------------------------------|--------------------------------|
+* | 1 | Create a one-shot timer, which calls `palTimerFunc1` when triggered, using `pal_osTimerCreate`.  | PAL_SUCCESS                    |
+* | 2 | Get the kernel `sysTick` value.                                                                  | PAL_SUCCESS                    |
+* | 3 | Start the timer using `pal_osTimerStart`.                                                        | PAL_SUCCESS                    |
+* | 4 | Sleep for a period.                                                                              | PAL_SUCCESS                    |
+* | 5 | Check that timer is in 10% limits.                                                               | PAL_SUCCESS                    |
+* | 6 | Delete the timer.                                                                                | PAL_SUCCESS                    |
+*/
+TEST(pal_rtos, OneShotTimerAccuracyUnityTest)
+{
+    palStatus_t status = PAL_SUCCESS;
+    palTimerID_t timerID1 = NULLPTR;
+
+    g_timerArgs.ticksInFunc1 = 0;
+    g_timerArgs.ticksBeforeTimer = 0;
+
+    /*#1*/
+    status = pal_osTimerCreate(palTimerFunc1, NULL, palOsTimerOnce, &timerID1);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#2*/
+    g_timerArgs.ticksBeforeTimer = pal_osKernelSysTick();
+    /*#3*/
+    status = pal_osTimerStart(timerID1, PAL_TEST_TIME_SECOND);
+    PAL_PRINTF("ticks before Timer: 0 - %" PRIu32 "\n", g_timerArgs.ticksBeforeTimer);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#4*/
+    status = pal_osDelay(1500);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#5*/
+    // check that timer is in 90..110% accuracy.
+    TEST_ASSERT_UINT32_WITHIN((PAL_TEST_TIME_SECOND/PAL_TEST_PERCENTAGE_HUNDRED) * PAL_TEST_PERCENTAGE_TIMER_ERROR, PAL_TEST_TIME_SECOND, (pal_osKernelSysMilliSecTick(g_timerArgs.ticksInFunc1) - pal_osKernelSysMilliSecTick(g_timerArgs.ticksBeforeTimer)));
+    /*#6*/
+    status = pal_osTimerDelete(&timerID1);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    TEST_ASSERT_EQUAL(NULLPTR, timerID1);
+}
+
+/*! \brief Test periodic timer accuracy against system clock.
+ *
+* | # |    Step                                                                                          |   Expected                     |
+* |---|--------------------------------------------------------------------------------------------------|--------------------------------|
+* | 1 | Create a periodic timer, which calls `palTimerFunc7` when triggered, using `pal_osTimerCreate`.  | PAL_SUCCESS                    |
+* | 2 | Get the kernel `sysTick` value.                                                                  | PAL_SUCCESS                    |
+* | 3 | Start the timer using `pal_osTimerStart`.                                                        | PAL_SUCCESS                    |
+* | 4 | Sleep for a period.                                                                              | PAL_SUCCESS                    |
+* | 5 | Check callback counter and that timer is in 10% limits.                                           | PAL_SUCCESS                    |
+* | 6 | Delete the timer .                                                                               | PAL_SUCCESS                    |
+*/
+
+TEST(pal_rtos, PeriodicTimerAccuracyUnityTest)
+{
+    palStatus_t status = PAL_SUCCESS;
+    palTimerID_t timerID1 = NULLPTR;
+
+    g_timerArgs.ticksInFunc1 = 0;
+    g_timerArgs.ticksInFunc2 = 0;
+    g_timerArgs.ticksBeforeTimer = 0;
+
+    /*#1*/
+    status = pal_osTimerCreate(palTimerFunc7, &timerID1, palOsTimerPeriodic, &timerID1);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#2*/
+    g_timerArgs.ticksBeforeTimer = pal_osKernelSysTick();
+    /*#3*/
+    status = pal_osTimerStart(timerID1, 100);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#4*/
+    status = pal_osDelay(1500);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#5*/
+    TEST_ASSERT_EQUAL_INT(10, g_timerArgs.ticksInFunc1);
+    TEST_ASSERT_UINT32_WITHIN(((PAL_TEST_TIME_SECOND/PAL_TEST_PERCENTAGE_HUNDRED) * PAL_TEST_PERCENTAGE_TIMER_ERROR), PAL_TEST_TIME_SECOND, (pal_osKernelSysMilliSecTick(g_timerArgs.ticksInFunc2) - pal_osKernelSysMilliSecTick(g_timerArgs.ticksBeforeTimer)));
+    /*#6*/
+    status = pal_osTimerDelete(&timerID1);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    TEST_ASSERT_EQUAL(NULLPTR, timerID1);
+}
+
+/*! \brief Test that single-shot and periodic timer works when stopped from callback.
+ *
+* | # |    Step                                                                                          |   Expected                     |
+* |---|--------------------------------------------------------------------------------------------------|--------------------------------|
+* | 1 | Create a one-shot timer, which calls `palTimerFunc6` when triggered, using `pal_osTimerCreate`.  | PAL_SUCCESS                    |
+* | 2 | Start the timer using `pal_osTimerStart`.                                                        | PAL_SUCCESS                    |
+* | 3 | Sleep for a period.                                                                              | PAL_SUCCESS                    |
+* | 4 | Check that timer is in fired only one time.                                                      | PAL_SUCCESS                    |
+* | 5 | Delete the timer.                                                                                | PAL_SUCCESS                    |
+*/
+TEST(pal_rtos, OneShotTimerStopUnityTest)
+{
+    palStatus_t status = PAL_SUCCESS;
+    palTimerID_t timerID1 = NULLPTR;
+
+    g_timerArgs.ticksBeforeTimer = 0;
+    g_timerArgs.ticksInFunc1 = 0;
+
+    /*#1*/
+    status = pal_osTimerCreate(palTimerFunc6, &timerID1, palOsTimerOnce, &timerID1);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#2*/
+    status = pal_osTimerStart(timerID1, 500);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#3*/
+    status = pal_osDelay(1500);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#4*/
+    TEST_ASSERT_EQUAL_INT(1, g_timerArgs.ticksInFunc1);
+    /*#5*/
+    status = pal_osTimerDelete(&timerID1);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    TEST_ASSERT_EQUAL(NULLPTR, timerID1);
+
+}
+
+/*! \brief Test that single-shot and periodic timer works when stopped from callback.
+ *
+* | # |    Step                                                                                          |   Expected                     |
+* |---|--------------------------------------------------------------------------------------------------|--------------------------------|
+* | 1 | Create a periodic timer, which calls `palTimerFunc6` when triggered, using `pal_osTimerCreate`.  | PAL_SUCCESS                    |
+* | 2 | Start the timer using `pal_osTimerStart`.                                                        | PAL_SUCCESS                    |
+* | 3 | Sleep for a period.                                                                              | PAL_SUCCESS                    |
+* | 4 | Check that timer is in fired only one time.                                                      | PAL_SUCCESS                    |
+* | 5 | Delete the timer.                                                                                | PAL_SUCCESS                    |
+*/
+TEST(pal_rtos, PeriodicTimerStopUnityTest)
+{
+    palStatus_t status = PAL_SUCCESS;
+    palTimerID_t timerID1 = NULLPTR;
+
+    g_timerArgs.ticksInFunc1 = 0;
+
+    /*#1*/
+    status = pal_osTimerCreate(palTimerFunc6, &timerID1, palOsTimerPeriodic, &timerID1);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#2*/
+    status = pal_osTimerStart(timerID1, 500);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#3*/
+    status = pal_osDelay(1500);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    /*#4*/
+    TEST_ASSERT_EQUAL_INT(1, g_timerArgs.ticksInFunc1);
+    /*#5*/
+    status = pal_osTimerDelete(&timerID1);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
+    TEST_ASSERT_EQUAL(NULLPTR, timerID1);
+}
 /*! \brief Create two timers: periodic and one-shot. Starts both timers,
 * then causes a delay to allow output from the timer functions to be printed on the console.
 *
@@ -270,29 +732,21 @@ TEST(pal_rtos, BasicTimeScenario)
 * | 8 | Stop the second timer using `pal_osTimerStop`.                                                   | PAL_SUCCESS                    |
 * | 9 | Delete the first timer using `pal_osTimerDelete`.                                                | PAL_SUCCESS                    |
 * | 10 | Delete the second timer using `pal_osTimerDelete`.                                              | PAL_SUCCESS                    |
-* | 11 | Create a periodic timer, which calls `palTimerFunc3` when triggered, using `pal_osTimerCreate`. | PAL_SUCCESS                    |
-* | 12 | Create a periodic timer, which calls `palTimerFunc4` when triggered, using `pal_osTimerCreate`. | PAL_ERR_NO_HIGH_RES_TIMER_LEFT |
-* | 13 | Start the first timer using `pal_osTimerStart` as high res timer.                               | PAL_SUCCESS                    |
-* | 14 | Start the second timer using `pal_osTimerStart` as high res timer.                              | PAL_ERR_NO_HIGH_RES_TIMER_LEFT |
-* | 15 | Sleep for a period.                                                                             | PAL_SUCCESS                    |
-* | 16 | Stop the second timer using `pal_osTimerStop`.                                                  | PAL_SUCCESS                    |
-* | 17 | Start the second timer using `pal_osTimerStart` as high res timer                               | PAL_SUCCESS                    |
-* | 18 | Sleep for a period.                                                                             | PAL_SUCCESS                    |
-* | 19 | Delete the first timer using `pal_osTimerDelete`.                                               | PAL_SUCCESS                    |
-* | 20 | Delete the second timer using `pal_osTimerDelete`.                                              | PAL_SUCCESS                    |
-* | 21 | Create a periodic timer, which calls `palTimerFunc5` when triggered, using `pal_osTimerCreate`. | PAL_SUCCESS                    |
-* | 22 | Sleep for a period.                                                                             | PAL_SUCCESS                    |
-* | 23 | Delete the first timer using `pal_osTimerDelete`.                                               | PAL_SUCCESS                    |
-* | 24 | Stop the timer using `pal_osTimerStop`.  and check the number of callbacks is correct           | PAL_SUCCESS                    |
-* | 25 | Delete the timer using `pal_osTimerDelete`.                                                     | PAL_SUCCESS                    |
-* | 26 | Start the timer with zero millisec.                                                             | PAL_ERR_RTOS_VALUE             |
-* | 27 | Delete the timer using `pal_osTimerDelete`.                                                     | PAL_SUCCESS                    |
 */
-TEST(pal_rtos, TimerUnityTest)
+
+TEST(pal_rtos, TimerStartUnityTest)
 {
+    uint32_t expectedTicks;
+    uint32_t ticksInFuncError;
+
     palStatus_t status = PAL_SUCCESS;
     palTimerID_t timerID1 = NULLPTR;
     palTimerID_t timerID2 = NULLPTR;
+
+    g_timerArgs.ticksBeforeTimer = 0;
+    g_timerArgs.ticksInFunc1 = 0;
+    g_timerArgs.ticksInFunc2 = 0;
+
     /*#1*/
     status = pal_osTimerCreate(palTimerFunc1, NULL, palOsTimerOnce, &timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
@@ -324,24 +778,46 @@ TEST(pal_rtos, TimerUnityTest)
     status = pal_osTimerDelete(&timerID2);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     TEST_ASSERT_EQUAL(NULLPTR, timerID2);
+}
+
+/*! \brief Test high-resolution timers
+ *
+* | 1 | Create a periodic timer, which calls `palTimerFunc3` when triggered, using `pal_osTimerCreate`. | PAL_SUCCESS                    |
+* | 2 | Create a periodic timer, which calls `palTimerFunc4` when triggered, using `pal_osTimerCreate`. | PAL_ERR_NO_HIGH_RES_TIMER_LEFT |
+* | 3 | Start the first timer using `pal_osTimerStart` as high res timer.                               | PAL_SUCCESS                    |
+* | 4 | Start the second timer using `pal_osTimerStart` as high res timer.                              | PAL_ERR_NO_HIGH_RES_TIMER_LEFT |
+* | 5 | Sleep for a period.                                                                             | PAL_SUCCESS                    |
+* | 6 | Stop the second timer using `pal_osTimerStop`.                                                  | PAL_SUCCESS                    |
+* | 7 | Start the second timer using `pal_osTimerStart` as high res timer                               | PAL_SUCCESS                    |
+* | 8 | Sleep for a period.                                                                             | PAL_SUCCESS                    |
+* | 9 | Delete the first timer using `pal_osTimerDelete`.                                               | PAL_SUCCESS                    |
+* | 10 | Delete the second timer using `pal_osTimerDelete`.                                             | PAL_SUCCESS                    |
+*/
+TEST(pal_rtos, HighResTimerUnityTest)
+{
+    palStatus_t status = PAL_SUCCESS;
+    palTimerID_t timerID1 = NULLPTR;
+    palTimerID_t timerID2 = NULLPTR;
+    uint32_t expectedTicks;
+    uint32_t ticksInFuncError;
 
 	g_timerArgs.ticksBeforeTimer = 0;
     g_timerArgs.ticksInFunc1 = 0;
     g_timerArgs.ticksInFunc2 = 0;
 	
-    /*#11*/
+    /*#1*/
     status = pal_osTimerCreate(palTimerFunc3, NULL, palOsTimerPeriodic, &timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     
-    /*#12*/
+    /*#2*/
     status = pal_osTimerCreate(palTimerFunc4, NULL, palOsTimerPeriodic, &timerID2);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    /*#13*/
+    /*#3*/
     status = pal_osTimerStart(timerID1, PAL_TEST_HIGH_RES_TIMER);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    /*#14*/
+    /*#4*/
     status = pal_osTimerStart(timerID2, PAL_TEST_HIGH_RES_TIMER);
     if (PAL_SUCCESS == status) // behavior is slightly different for Linux due to high res timer limitation there (only one at a time supported there)
 	{
@@ -352,38 +828,59 @@ TEST(pal_rtos, TimerUnityTest)
 	{
 		TEST_ASSERT_EQUAL_HEX(PAL_ERR_NO_HIGH_RES_TIMER_LEFT, status);
 	}
-    /*#15*/
+    /*#5*/
     status = pal_osDelay(500);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    /*#16*/
+    /*#6*/
     status = pal_osTimerStop(timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    /*#17*/
+    /*#7*/
     status = pal_osTimerStart(timerID2, PAL_TEST_HIGH_RES_TIMER2);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    /*#18*/
+    /*#8*/
     status = pal_osDelay(PAL_TIME_TO_WAIT_SHORT_MS);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
     status = pal_osTimerStop(timerID2);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-	TEST_ASSERT_TRUE(g_timerArgs.ticksInFunc1 >= ((PAL_TIME_TO_WAIT_SHORT_MS / PAL_TEST_HIGH_RES_TIMER2)*PAL_TEST_PERCENTAGE_LOW)/ PAL_TEST_PERCENTAGE_HUNDRED); // check there is at least more than 95% of expected timer callbacks.
-	
-    /*#19*/
+    // check there is at 90..110% of expected timer callbacks.
+    expectedTicks = (uint32_t)((float)PAL_TIME_TO_WAIT_SHORT_MS / (float)PAL_TEST_HIGH_RES_TIMER2);
+    ticksInFuncError = (uint32_t)(((float)PAL_TIME_TO_WAIT_SHORT_MS / (float)PAL_TEST_HIGH_RES_TIMER2) * (float)PAL_TEST_PERCENTAGE_TIMER_ERROR);
+    TEST_ASSERT_UINT32_WITHIN(ticksInFuncError, expectedTicks, g_timerArgs.ticksInFunc1);
+
+    /*#9*/
     status = pal_osTimerDelete(&timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     TEST_ASSERT_EQUAL(NULLPTR, timerID1);
     
-    /*#20*/
+    /*#10*/
     status = pal_osTimerDelete(&timerID2);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     TEST_ASSERT_EQUAL(NULLPTR, timerID2);
+}
 
-    /*#21*/
+/*! /brief Test periodic timer with sleep inside the callback
+ *
+* | 1 | Create a periodic timer, which calls `palTimerFunc5` when triggered, using `pal_osTimerCreate`. | PAL_SUCCESS                    |
+* | 2 | Sleep for a period.                                                                             | PAL_SUCCESS                    |
+* | 3 | Delete the first timer using `pal_osTimerDelete`.                                               | PAL_SUCCESS                    |
+* | 4 | Stop the timer using `pal_osTimerStop`.  and check the number of callbacks is correct           | PAL_SUCCESS                    |
+* | 5 | Delete the timer using `pal_osTimerDelete`.                                                     | PAL_SUCCESS                    |
+* | 6 | Start the timer with zero millisec.                                                             | PAL_ERR_RTOS_VALUE             |
+* | 7 | Delete the timer using `pal_osTimerDelete`.                                                     | PAL_SUCCESS                    |
+*/
+TEST(pal_rtos, TimerSleepUnityTest)
+{
+    palStatus_t status = PAL_SUCCESS;
+    palTimerID_t timerID1 = NULLPTR;
+    uint32_t expectedTicks;
+    uint32_t ticksInFuncError;
+    
+    /*#1*/
     g_timerArgs.ticksBeforeTimer = 0;
     g_timerArgs.ticksInFunc1 = 0;
     g_timerArgs.ticksInFunc2 = 0;
@@ -391,33 +888,56 @@ TEST(pal_rtos, TimerUnityTest)
     status = pal_osTimerCreate(palTimerFunc5, NULL, palOsTimerPeriodic, &timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    /*#22*/
+    /*#2*/
     status = pal_osTimerStart(timerID1, PAL_TEST_HIGH_RES_TIMER);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     
-    /*#23*/
+    /*#3*/
     status = pal_osDelay(PAL_TIME_TO_WAIT_MS);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    /*#24*/
+    /*#4*/
     status = pal_osTimerStop(timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 
-    TEST_ASSERT_TRUE(g_timerArgs.ticksInFunc1 >= ((PAL_TIME_TO_WAIT_MS / PAL_TEST_HIGH_RES_TIMER) * PAL_TEST_PERCENTAGE_LOW) / PAL_TEST_PERCENTAGE_HUNDRED); // check there is at least more than 95% of expected timer callbacks.
-    TEST_ASSERT_TRUE(g_timerArgs.ticksInFunc1 <= ((PAL_TIME_TO_WAIT_MS / PAL_TEST_HIGH_RES_TIMER) * PAL_TEST_PERCENTAGE_HIGH) / PAL_TEST_PERCENTAGE_HUNDRED); // check there is at most less than 105% of expected timer callbacks.
+    // The code expects currently timer to have +-10% accuracy, or actually a 90% of success
+    // rate in getting CPU time. The previous +-5% did fail at random on Linux for perfectly
+    // valid reasons, as the timer is ran in a thread and on a multi user, non-rtos OS the
+    // CPU time is given at best effort basis. There is no need to ask for realtime thread
+    // priority just to serve PAL tests, as nothing else in related codebase actually expects to have
+    // semi hard realtime guarantees from a timer.
+    expectedTicks = (uint32_t)((float)PAL_TIME_TO_WAIT_MS / (float)PAL_TEST_HIGH_RES_TIMER);
+    ticksInFuncError = (uint32_t)(((float)PAL_TIME_TO_WAIT_MS / (float)PAL_TEST_HIGH_RES_TIMER) * (float)PAL_TEST_PERCENTAGE_TIMER_ERROR);
+    TEST_ASSERT_UINT32_WITHIN(ticksInFuncError, expectedTicks, g_timerArgs.ticksInFunc1);
 
-    /*#25*/
+    /*#5*/
     status = pal_osTimerDelete(&timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     TEST_ASSERT_EQUAL(NULLPTR, timerID1);
 
-    /*#26*/
+}
+
+/*! /brief Test timer API with non-valid parameters
+ *
+* | 1 | Start the timer with zero millisec.                                                             | PAL_ERR_RTOS_VALUE             |
+* | 2 | Delete the timer using `pal_osTimerDelete`.                                                     | PAL_SUCCESS                    |
+*/
+TEST(pal_rtos, TimerNegativeUnityTest)
+{
+    palStatus_t status = PAL_SUCCESS;
+    palTimerID_t timerID1 = NULLPTR;
+
+    g_timerArgs.ticksBeforeTimer = 0;
+    g_timerArgs.ticksInFunc1 = 0;
+    g_timerArgs.ticksInFunc2 = 0;
+
+    /*#1*/
     status = pal_osTimerCreate(palTimerFunc5, NULL, palOsTimerPeriodic, &timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     status = pal_osTimerStart(timerID1, 0);
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_RTOS_VALUE, status);
 
-    /*#27*/
+    /*#2*/
     status = pal_osTimerDelete(&timerID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
 }
@@ -517,6 +1037,8 @@ TEST(pal_rtos, PrimitivesUnityTest2)
     /*#9*/
     status = pal_osThreadTerminate(NULL);
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
+#else
+    TEST_IGNORE_MESSAGE("Ignored, tested only with DEBUG build");
 #endif
 }
 
@@ -529,16 +1051,16 @@ TEST(pal_rtos, PrimitivesUnityTest2)
 * | 1 | Create a semaphore with count = 1 using `pal_osSemaphoreCreate`.                          | PAL_SUCCESS |
 * | 2 | Wait for the semaphore using `pal_osSemaphoreWait` (should not block).                    | PAL_SUCCESS |
 * | 3 | Create a thread running `palThreadFuncWaitForEverTestusing` and `pal_osThreadCreateWithAlloc`. | PAL_SUCCESS |
-* | 4 | Set time using `pal_osSetTime`.                                                           | PAL_SUCCESS |
-* | 5 | Wait for the semaphore using `pal_osSemaphoreWait` (should block; released by thread).        | PAL_SUCCESS |
+* | 4 | Get time using `pal_osKernelSysMilliSecTick` & pal_osKernelSysTick().                         | PAL_SUCCESS |
+* | 5 | Wait for the semaphore using `pal_osSemaphoreWait` (should block; released by thread). Allow 25% inaccuracy on timing. | PAL_SUCCESS |
 * | 6 | Delete the semaphore using `pal_osSemaphoreDelete`.                                           | PAL_SUCCESS |
 * | 7 | Terminate the thread using `pal_osThreadTerminate`.                                           | PAL_SUCCESS |
 */
 TEST(pal_rtos, SemaphoreWaitForever)
 {
     int32_t count = 0;
-    uint64_t timeElapsed = PAL_MIN_SEC_FROM_EPOCH;
-    uint64_t timePassedInSec;
+    uint64_t timeStartMs = PAL_MIN_SEC_FROM_EPOCH;
+    uint64_t timeEndMs;
     palStatus_t status = PAL_SUCCESS;
     palThreadID_t threadID1 = PAL_INVALID_THREAD;
 
@@ -549,7 +1071,7 @@ TEST(pal_rtos, SemaphoreWaitForever)
     status = pal_osSemaphoreWait(semaphore1, PAL_RTOS_WAIT_FOREVER, &count);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     /*#3*/
-    status = pal_osSetTime(timeElapsed);
+    timeStartMs = pal_osKernelSysMilliSecTick(pal_osKernelSysTick());
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status); // More than current epoch time -> success    
     status = pal_osThreadCreateWithAlloc(palThreadFuncWaitForEverTest, (void *)&semaphore1, PAL_osPriorityAboveNormal, PAL_TEST_THREAD_STACK_SIZE, NULL, &threadID1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
@@ -557,8 +1079,8 @@ TEST(pal_rtos, SemaphoreWaitForever)
     status = pal_osSemaphoreWait(semaphore1, PAL_RTOS_WAIT_FOREVER, &count);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     /*#5*/
-    timePassedInSec = pal_osGetTime();
-    TEST_ASSERT_EQUAL_HEX(0, (timePassedInSec - timeElapsed) >= PAL_TIME_TO_WAIT_MS/2);
+    timeEndMs = pal_osKernelSysMilliSecTick(pal_osKernelSysTick());
+    TEST_ASSERT_UINT64_WITHIN(PAL_TIME_TO_WAIT_MS/4, PAL_TIME_TO_WAIT_MS/2, (timeEndMs - timeStartMs));
     /*#6*/
     status = pal_osSemaphoreDelete(&semaphore1);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
@@ -635,6 +1157,11 @@ TEST(pal_rtos, SemaphoreBasicTest)
 * | # |    Step                        |   Expected  |
 * |---|--------------------------------|-------------|
 * | 1 | Call atomic increment using `pal_osAtomicIncrement` and check that the value was incremented. | PAL_SUCCESS |
+* | 2 | Call atomic increment using `pal_osAtomicIncrement` and check that the value was incremented. | PAL_SUCCESS |
+* | 3 | Call atomic increment using `pal_osAtomicIncrement` with negative value and check that the value was decremented. | PAL_SUCCESS |
+* | 4 | Call atomic increment using `pal_osAtomicIncrement` with zero value and check that the value was same. | PAL_SUCCESS |
+* | 5 | Call atomic increment using `pal_osAtomicIncrement` with negative value and check that the value was decremented. | PAL_SUCCESS |
+* | 6 | Call atomic increment using `pal_osAtomicIncrement` with negative value and check that the value was decremented. | PAL_SUCCESS |
 */
 TEST(pal_rtos, AtomicIncrementUnityTest)
 {
@@ -642,120 +1169,44 @@ TEST(pal_rtos, AtomicIncrementUnityTest)
     int32_t increment = 10;
     int32_t tmp = 0;
     int32_t original = num1;
+
     /*#1*/
     tmp = pal_osAtomicIncrement(&num1, increment);
-
-
     TEST_ASSERT_EQUAL(original + increment, tmp);
+    TEST_ASSERT_EQUAL(num1, tmp);
 
-}
-
-struct randBuf
-{
-    uint8_t rand[6];
-};
-
-/*! \brief Check the random APIs. For each API, the test calls the random API in a loop
-* and stores the result. When the loop finishes, we verify that the count of the
-* duplication in the stored values is less than the defined random margin value for each API.
-*
-* | #  |    Step                                                                     |   Expected               |
-* |--- |-----------------------------------------------------------------------------|--------------------------|
-* | 1  | Fill array with random 32bit values using `pal_osRandom32bit` in a loop.    | PAL_SUCCESS              |
-* | 2  | Check array for matching values and make sure there are not too many.       | PAL_SUCCESS              |
-* | 3  | Fill array with random values using `pal_osRandomUniform` in a loop.        | PAL_SUCCESS              |
-* | 4  | Check array for matching values and make sure there are not too many.       | PAL_SUCCESS              |
-* | 5  | Fill array with random byte sequences using `pal_osRandomBuffer` in a loop. | PAL_SUCCESS              |
-* | 6  | Check array for matching values and make sure there are not too many.       | PAL_SUCCESS              |
-* | 7  | Call pal_osRandom32bit with NULL output parameter.                          | PAL_ERR_INVALID_ARGUMENT |
-* | 8  | Call pal_osRandomBuffer with NULL output parameter.                         | PAL_ERR_INVALID_ARGUMENT |
-* | 9  | Call pal_osRandomUniform with NULL output parameter.                        | PAL_ERR_INVALID_ARGUMENT |
-* | 10 | Call pal_osRandomBuffer while pal is not initialized.                       | PAL_ERR_NOT_INITIALIZED  |
-*/
-TEST(pal_rtos, RandomUnityTest)
-{
-    palStatus_t status = PAL_SUCCESS;
-    uint32_t randomArray[PAL_RANDOM_ARRAY_TEST_SIZE];
-    struct randBuf randomBufArray[PAL_RANDOM_BUFFER_ARRAY_TEST_SIZE];
-    uint32_t randomMargin = 0;
-
-    memset(randomArray, 0x0, sizeof(randomArray));
-    memset(randomBufArray, 0x0, sizeof(randomBufArray));
-    /*#1*/
-    for(int i = 0; i < PAL_RANDOM_ARRAY_TEST_SIZE ; ++i)
-    {
-        status = pal_osRandom32bit(&randomArray[i]);
-        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    }
     /*#2*/
-    for(int k = 0; k < PAL_RANDOM_ARRAY_TEST_SIZE ; ++k)
-    {
-        for (int j = k+1 ; j < PAL_RANDOM_ARRAY_TEST_SIZE ; ++j)
-        {
-            if (randomArray[k] == randomArray[j])
-            {
-                ++randomMargin;
-            }
-        }
-        randomArray[k] = 0;
-    }
-    TEST_ASSERT_TRUE(20 >= randomMargin);
-    randomMargin = 0;
+    increment = 40;
+    tmp = pal_osAtomicIncrement(&num1, increment);
+    TEST_ASSERT_EQUAL(50, tmp);
+    TEST_ASSERT_EQUAL(num1, tmp);
+
+    /*#3*/
+    increment = -45;
+    tmp = pal_osAtomicIncrement(&num1, increment);
+    TEST_ASSERT_EQUAL(5, tmp);
+    TEST_ASSERT_EQUAL(num1, tmp);
+
+    /*#4*/
+    // verify with zero too, as it is legal value
+    increment = 0;
+    tmp = pal_osAtomicIncrement(&num1, increment);
+    TEST_ASSERT_EQUAL(5, tmp);
+    TEST_ASSERT_EQUAL(num1, tmp);
+
     /*#5*/
-    for (int i = 0; i < PAL_RANDOM_BUFFER_ARRAY_TEST_SIZE ; ++i)
-    {
-        status = pal_osRandomBuffer(randomBufArray[i].rand, sizeof(randomBufArray[i].rand));
-        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    }
+    increment = -5;
+    tmp = pal_osAtomicIncrement(&num1, increment);
+    TEST_ASSERT_EQUAL(0, tmp);
+    TEST_ASSERT_EQUAL(num1, tmp);
+
     /*#6*/
-    for(int k = 0; k < PAL_RANDOM_BUFFER_ARRAY_TEST_SIZE ; ++k)
-    {
-        for (int j = k+1 ; j < PAL_RANDOM_BUFFER_ARRAY_TEST_SIZE ; ++j)
-        {
-            if(0 == memcmp(randomBufArray[k].rand, randomBufArray[j].rand, sizeof(uint8_t)*6))
-            {
-                ++randomMargin;
-            }
-        }
-    }
-
-    TEST_ASSERT_TRUE(10 >= randomMargin);
-
-#ifdef DEBUG
-    /*#7*/
-    status = pal_osRandom32bit(NULL);
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
-
-    /*#8*/
-    status = pal_osRandomBuffer(NULL, 0);
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
-
-
-#endif
-
-    /*#10*/
-    pal_destroy();
-    status = pal_osRandomBuffer(randomBufArray[0].rand, sizeof(randomBufArray[0].rand));
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_NOT_INITIALIZED, status);
+    increment = -15;
+    tmp = pal_osAtomicIncrement(&num1, increment);
+    TEST_ASSERT_EQUAL(-15, tmp);
+    TEST_ASSERT_EQUAL(num1, tmp);
 }
 
-
-/*! \brief call the random API in a PAL_RANDOM_TEST_LOOP loop.
-* | # |    Step                        |   Expected  |
-* |---|--------------------------------|-------------|
-* | 1 | Call `pal_osRandomBuffer` in a PAL_RANDOM_TEST_LOOP loop .         PAL_SUCCESS |
-*/
-TEST(pal_rtos, loopRandomBigNumber)
-{
-	palStatus_t status = PAL_SUCCESS;
-	uint8_t loopRandomArray[PAL_RANDOM_ARRAY_TEST_SIZE];
-
-	for (int i = 0; i < PAL_RANDOM_TEST_LOOP; ++i)
-	{
-		status = pal_osRandomBuffer(loopRandomArray, sizeof(loopRandomArray));
-		TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-	}
-}
 
 /*! \brief Verify that PAL can handle multiple calls for `pal_init()` and `pal_destroy()`.
 *
@@ -771,6 +1222,8 @@ TEST(pal_rtos, loopRandomBigNumber)
 */
 TEST(pal_rtos, pal_init_test)
 {
+#if (PAL_INITIALIZED_BEFORE_TESTS == 0)
+
     palStatus_t status = PAL_SUCCESS;
     int32_t initCounter = 0;
     /*#1*/
@@ -801,6 +1254,9 @@ TEST(pal_rtos, pal_init_test)
     /*#7*/
     initCounter = pal_destroy();
     TEST_ASSERT_EQUAL_HEX(0, initCounter);
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_INITIALIZED_BEFORE_TESTS set");
+#endif
 }
 
 /*! \brief Check derivation of keys from the platform's Root of Trust using the KDF algorithm.
@@ -865,7 +1321,7 @@ TEST(pal_rtos, GetDeviceKeyTest_CMAC)
 * | 3 | Call `pal_osGetDeviceKey` with invalid arguments.                              | PAL_FAILURE         |
 * | 4 | Call `pal_osGetDeviceKey` with invalid arguments.                              | PAL_FAILURE         |
 * | 5 | Check that all integrations of each type of derivation return the same value.  | PAL_SUCCESS         |
-* | 6 | Call `pal_osGetDeviceKey` with invalid palDevKeyType_t.                        | PAL_ERR_GET_DEV_KEY |
+* | 6 | Call `pal_osGetDeviceKey` with invalid palDevKeyType_t.                        | PAL_ERR_INVALID_ARGUMENT |
  */
 TEST(pal_rtos, GetDeviceKeyTest_HMAC_SHA256)
 {
@@ -900,50 +1356,6 @@ TEST(pal_rtos, GetDeviceKeyTest_HMAC_SHA256)
     status = pal_osGetDeviceKey((palDevKeyType_t)999, encKeyDerive[0], keyLenBytes);
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
 #endif
-}
-
-/*! \brief Check the APIs `pal_osSetTime()` and `pal_osGetTime()` with different scenarios
-* for valid and non-valid scenarios and epoch values.
-* The test also checks that the time increases.
-*
-* | # |    Step                        |   Expected  |
-* |---|--------------------------------|-------------|
-* | 1 | Start a loop for the following steps.                                                | PAL_SUCCESS |
-* | 2 | Set time to invalid value using `pal_osSetTime`.                                 | PAL_ERR_INVALID_TIME |
-* | 3 | Get time using `pal_osGetTime`.                                                  | PAL_SUCCESS |
-* | 4 | Set time to valid value using `pal_osSetTime`.                                   | PAL_SUCCESS |
-* | 5 | Sleep.                                                                         | PAL_SUCCESS |
-* | 6 | Get time using `pal_osGetTime` and check that it equals set time + sleep time.   | PAL_SUCCESS |
-*/
-TEST(pal_rtos, RealTimeClockTest1)
-{
-    palStatus_t status;
-    uint64_t curTime = 0;
-    uint64_t lastTimeSeen = 0;
-    const uint64_t minSecSinceEpoch = PAL_MIN_SEC_FROM_EPOCH + 1; //At least 47 years passed from 1.1.1970 in seconds
-
-    /*#1*/
-    for (int i=0; i < 2; i++)
-    {
-    /*#2*/
-        status = pal_osSetTime(3);
-        TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_TIME, status); // Less than current epoch time -> error
-
-    /*#3*/
-        curTime = pal_osGetTime();
-        TEST_ASSERT_TRUE(lastTimeSeen <= curTime); //Time was not previously set; 0 is acceptable
-    /*#4*/
-        status = pal_osSetTime(minSecSinceEpoch);
-        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status); // More than current epoch time -> success
-    /*#5*/
-        int milliDelay = 1500;
-        pal_osDelay(milliDelay); //500 milliseconds
-    /*#6*/
-        curTime = pal_osGetTime();
-        TEST_ASSERT_TRUE(curTime > minSecSinceEpoch);
-        TEST_ASSERT_TRUE(curTime <= minSecSinceEpoch+(int)ceil((float)milliDelay/1000));
-        lastTimeSeen = curTime;
-    }
 }
 
 
@@ -1022,437 +1434,6 @@ TEST(pal_rtos, Recursive_Mutex_Test)
 
 
 
-/*! \brief Check Weak Set Time - Forword flow.
-*
-* | # |    Step                        |   Expected  |
-* |---|--------------------------------|-------------|
-* | 1 | checking RTC and SOTP flow - not set SOTP SAVED TIME  + LAST TIME BACK + RTC to new time          		      | PAL_SUCCESS |
-* | 2 | checking RTC and SOTP flow - not set SOTP SAVED TIME  + LAST TIME BACK to new time but set RTC to new time    | PAL_SUCCESS |
-* | 3 | checking RTC and SOTP flow - set SOTP SAVED TIME  + LAST TIME BACK + RTC to new time          		          | PAL_SUCCESS |
-*/
-TEST(pal_rtos, OsWeakSetTime_Forword)
-{
-    palStatus_t status;
-    sotp_result_e sotpStatus = SOTP_SUCCESS;
-    uint64_t setTimeInSeconds = 0;
-    uint64_t curentTimeInSeconds=0;
-    uint64_t pal_Time = 0;
-    uint64_t sotpGetTime = 0;
-    uint16_t actualLenBytes = 0;
-
-#if (PAL_USE_HW_RTC)
-    //This code is to preserve system time
-    uint64_t testStartTime = 0;
-    status = pal_plat_osGetRtcTime(&testStartTime);
-#endif
-
-
-    /*#1*/
-#if (PAL_USE_HW_RTC)
-    pal_plat_osSetRtcTime(PAL_MIN_RTC_SET_TIME);
-#endif
-    pal_osSetTime(PAL_MIN_SEC_FROM_EPOCH + PAL_SECONDS_PER_DAY * 100);
-    curentTimeInSeconds = pal_osGetTime();
-
-    sotpStatus = sotp_set(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t *)&curentTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    sotpStatus = sotp_set(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t *)&curentTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-#if (PAL_USE_HW_RTC)
-    uint64_t rtcTime = 0;
-    status = pal_plat_osSetRtcTime(curentTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-#endif//PAL_USE_HW_RTC
-
-    setTimeInSeconds = curentTimeInSeconds + (50 * PAL_ONE_SEC);
-    status = pal_osSetWeakTime(setTimeInSeconds);
-
-    pal_Time = pal_osGetTime();
-    if (pal_Time - setTimeInSeconds > 5)
-    {
-    	status = PAL_ERR_GENERAL_BASE;
-    }
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-
-    sotpStatus = sotp_get(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-#endif 
-
-#if (PAL_USE_HW_RTC)
-    status = pal_plat_osGetRtcTime(&rtcTime);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_NOT_EQUAL(rtcTime, setTimeInSeconds);
-#endif//PAL_USE_HW_RTC
-
-    /*#2*/
-    curentTimeInSeconds = pal_osGetTime();
-#if (PAL_USE_HW_RTC)
-    pal_plat_osSetRtcTime(curentTimeInSeconds);
-#endif//PAL_USE_HW_RTC
-    
-    setTimeInSeconds = curentTimeInSeconds+(200 * PAL_ONE_SEC);
-
-    status = pal_osSetWeakTime(setTimeInSeconds);
-    pal_Time = pal_osGetTime();
-    if (pal_Time - setTimeInSeconds > 5)
-    {
-    	status = PAL_ERR_GENERAL_BASE;
-    }
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-	TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-	TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-
-    sotpStatus = sotp_get(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-	TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-	TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-#endif
-
-#if (PAL_USE_HW_RTC)
-    status = pal_plat_osGetRtcTime(&rtcTime);
-    TEST_ASSERT_EQUAL_UINT64(rtcTime, setTimeInSeconds);
-#endif//PAL_USE_HW_RTC
-
-    /*#3*/
-    curentTimeInSeconds = pal_osGetTime();
-    sotpStatus = sotp_set(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t *)&curentTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    sotpStatus = sotp_set(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t *)&curentTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-#if (PAL_USE_HW_RTC)
-    status = pal_plat_osSetRtcTime(curentTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-#endif//PAL_USE_HW_RTC
-
-    setTimeInSeconds = curentTimeInSeconds + PAL_MINIMUM_SOTP_FORWARD_LATENCY_SEC + (100 * PAL_ONE_SEC);
-    status = pal_osSetWeakTime(setTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-	TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-	TEST_ASSERT_EQUAL_UINT64(sotpGetTime, setTimeInSeconds);
-#endif
-
-#if (PAL_USE_HW_RTC)
-    status = pal_plat_osGetRtcTime(&rtcTime);
-    TEST_ASSERT_EQUAL_UINT64(rtcTime, setTimeInSeconds);
-#endif//PAL_USE_HW_RTC
-
-#if (PAL_USE_HW_RTC)
-    //restore System time
-    pal_plat_osSetRtcTime(testStartTime + PAL_RUNNING_TEST_TIME);
-#endif
-}
-
-/*! \brief Check Weak Set Time - Backword flow.
-*
-* | # |    Step                        |   Expected  |
-* |---|--------------------------------|-------------|
-* | 1 | checking SOTP flow - set SOTP SAVED TIME and LAST TIME BACK to new time	        | PAL_SUCCESS |
-* | 2 | checking SOTP flow - not set SOTP SAVED TIME and LAST TIME BACK to new time	    | PAL_SUCCESS |
-*/
-TEST(pal_rtos, OsWeakSetTime_Backword)
-{
-    uint64_t setTimeInSeconds = 0;
-    uint64_t curentTimeInSeconds = 0;
-    palStatus_t status;
-    sotp_result_e sotpStatus = SOTP_SUCCESS;
-    uint64_t getTimeValueBackword = 0;
-    uint64_t pal_Time = 0;
-#if (PAL_USE_HW_RTC)
-    //This code is to preserve system time
-    uint64_t testStartTime = 0;
-    status = pal_plat_osGetRtcTime(&testStartTime);
-#endif
-
-    /*#1*/
-#if (PAL_USE_HW_RTC)
-    pal_plat_osSetRtcTime(PAL_MIN_RTC_SET_TIME);
-    pal_osSetTime(PAL_MIN_SEC_FROM_EPOCH + PAL_SECONDS_PER_DAY * 100);
-#endif
-    curentTimeInSeconds = pal_osGetTime();
-
-    getTimeValueBackword = curentTimeInSeconds - (3 * PAL_MINIMUM_SOTP_FORWARD_LATENCY_SEC);
-    sotpStatus = sotp_set(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t *)&getTimeValueBackword);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-
-    setTimeInSeconds = curentTimeInSeconds - (6 * PAL_SECONDS_PER_MIN);
-    status = pal_osSetWeakTime(setTimeInSeconds);
-
-    pal_Time = pal_osGetTime();
-    if (pal_Time - setTimeInSeconds > 5)
-    {
-    	status = PAL_ERR_GENERAL_BASE;
-    }
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-    uint64_t sotpGetTime = 0;
-    uint16_t actualLenBytes = 0;
-
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_EQUAL_UINT64(sotpGetTime, setTimeInSeconds);
-
-    sotpStatus = sotp_get(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_EQUAL_UINT64(sotpGetTime, setTimeInSeconds);
-#endif
-
-    /*#2*/
-    curentTimeInSeconds = pal_osGetTime();
-    getTimeValueBackword = curentTimeInSeconds - (3 * PAL_MINIMUM_SOTP_FORWARD_LATENCY_SEC);
-    sotpStatus = sotp_set(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t *)&getTimeValueBackword);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    sotpStatus = sotp_set(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t *)&getTimeValueBackword);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    setTimeInSeconds = curentTimeInSeconds - (12 * PAL_SECONDS_PER_MIN);
-
-    status = pal_osSetWeakTime(setTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-    sotpStatus = sotp_get(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-#endif
-
-#if (PAL_USE_HW_RTC)
-    //restore System time
-    pal_plat_osSetRtcTime(testStartTime + PAL_RUNNING_TEST_TIME);
-#endif
-}
-
-/*! \brief Weak Strong Set Time- minimalStoredLag flow.
-*
-* | # |    Step                        |   Expected  |
-* |---|--------------------------------|-------------|
-* | 1 | checking SOTP flow- set SOTP SAVED TIME to new time	                		| PAL_SUCCESS |
-* | 2 | checking SOTP flow- not set SOTP SAVED TIME	to new time                     | PAL_SUCCESS |
-*/
-TEST(pal_rtos, OsWeakSetTime_minimalStoredLag)
-{
-    palStatus_t status;
-    sotp_result_e sotpStatus = SOTP_SUCCESS;
-    uint64_t setTimeInSeconds = 0;
-    uint64_t curentTimeInSeconds = 0;
-    uint64_t sotpGetTime = 0;
-    uint16_t actualLenBytes = 0;
-    uint64_t setSotpTimeValue = 0;
-    
-#if (PAL_USE_HW_RTC)
-    //This code is to preserve system time
-    uint64_t testStartTime = 0;
-    status = pal_plat_osGetRtcTime(&testStartTime);
-#endif
-
-    /*#1*/
-#if (PAL_USE_HW_RTC)
-    pal_plat_osSetRtcTime(PAL_MIN_RTC_SET_TIME);
-#endif
-    pal_osSetTime(PAL_MIN_SEC_FROM_EPOCH + PAL_SECONDS_PER_DAY * 100);
-    curentTimeInSeconds = pal_osGetTime();
-    setTimeInSeconds = curentTimeInSeconds;
-
-    setSotpTimeValue = curentTimeInSeconds - (PAL_MINIMUM_STORAGE_LATENCY_SEC + 50);
-    sotpStatus = sotp_set(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t *)&setSotpTimeValue);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    status = pal_osSetWeakTime(setTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_EQUAL_UINT64(sotpGetTime, setTimeInSeconds);
-#endif
-
-    /*#2*/
-    curentTimeInSeconds = pal_osGetTime();
-    setTimeInSeconds = curentTimeInSeconds - 50;
-
-    setSotpTimeValue = curentTimeInSeconds;
-    sotpStatus = sotp_set(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t *)&setSotpTimeValue);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    status = pal_osSetWeakTime(setTimeInSeconds);
- 	TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-	
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-#endif
-
-#if (PAL_USE_HW_RTC)
-    //restore System time
-    pal_plat_osSetRtcTime(testStartTime + PAL_RUNNING_TEST_TIME);
-#endif
-}
-
-/*! \brief Check Strong Set Time.
-*
-* | # |    Step                        |   Expected  |
-* |---|--------------------------------|-------------|
-* | 1 | checking RTC flow - set new RTC time					                		| PAL_SUCCESS |
-* | 2 | checking RTC flow - not set RTC new time				                		| PAL_SUCCESS |
-* | 3 | checking SOTP flow - set SOTP SAVED TIME and LAST TIME BACK to new time	        | PAL_SUCCESS |
-* | 4 | checking SOTP flow - not set SOTP SAVED TIME and LAST TIME BACK to new time       | PAL_SUCCESS |
-*/
-TEST(pal_rtos, OsStrongSetTime)
-{
-    palStatus_t status;
-    sotp_result_e sotpStatus = SOTP_SUCCESS;
-    uint64_t setTimeInSeconds = 0;
-    uint64_t curentTimeInSeconds = 0;
-    uint64_t pal_Time = 0;
-    uint64_t sotpGetTime = 0;
-    uint16_t actualLenBytes = 0;
-    uint64_t setSotpTimeValue = 0;
-
-#if (PAL_USE_HW_RTC)
-    //This code is to preserve system time
-    uint64_t testStartTime = 0;
-    status = pal_plat_osGetRtcTime(&testStartTime);
-#endif
-
-    /*#1*/
-#if (PAL_USE_HW_RTC)
-    pal_plat_osSetRtcTime(PAL_MIN_RTC_SET_TIME);
-#endif
-    pal_osSetTime(PAL_MIN_SEC_FROM_EPOCH + PAL_SECONDS_PER_DAY * 100);
-    curentTimeInSeconds = pal_osGetTime();
-    setTimeInSeconds = curentTimeInSeconds;
-
-#if (PAL_USE_HW_RTC)
-    uint64_t rtcTime = 0;
-    rtcTime = curentTimeInSeconds - (50 + PAL_MINIMUM_RTC_LATENCY_SEC);
-    status = pal_plat_osSetRtcTime(rtcTime);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-#endif//PAL_USE_HW_RTC
-
-    status = pal_osSetStrongTime(setTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-#if (PAL_USE_HW_RTC)
-    status = pal_plat_osGetRtcTime(&rtcTime);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_EQUAL_UINT64(rtcTime, setTimeInSeconds);
-#endif//PAL_USE_HW_RTC
-
-    pal_Time = pal_osGetTime();
-    if (pal_Time - setTimeInSeconds > 5)
-    {
-    	status = PAL_ERR_GENERAL_BASE;
-    }
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-    /*#2*/
-    curentTimeInSeconds = pal_osGetTime();
-    setTimeInSeconds = curentTimeInSeconds;
-
-#if (PAL_USE_HW_RTC)
-    rtcTime = curentTimeInSeconds;
-    status = pal_plat_osSetRtcTime(rtcTime - 50);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-#endif//PAL_USE_HW_RTC
-
-    status = pal_osSetStrongTime(setTimeInSeconds);
-
-#if (PAL_USE_HW_RTC)
-    status = pal_plat_osGetRtcTime(&rtcTime);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_NOT_EQUAL(rtcTime, setTimeInSeconds);
-#endif//PAL_USE_HW_RTC
-
-    pal_Time = pal_osGetTime();
-    if (pal_Time - setTimeInSeconds > 5){
-    	status = PAL_ERR_GENERAL_BASE;
-    }
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-    /*#3*/
-    curentTimeInSeconds = pal_osGetTime();
-    setTimeInSeconds = curentTimeInSeconds;
-    setSotpTimeValue = curentTimeInSeconds - (PAL_MINIMUM_SOTP_FORWARD_LATENCY_SEC + 1*PAL_ONE_SEC);
-    sotpStatus = sotp_set(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t *)&setSotpTimeValue);
-	TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    status = pal_osSetStrongTime(setTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_EQUAL_UINT64(sotpGetTime, setTimeInSeconds);
-
-    sotpStatus = sotp_get(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_EQUAL_UINT64(sotpGetTime, setTimeInSeconds);
-#endif
-
-    pal_Time = pal_osGetTime();
-    if (pal_Time - setTimeInSeconds > 5)
-    {
-    	status = PAL_ERR_GENERAL_BASE;
-    }
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-    /*#4*/
-    curentTimeInSeconds = pal_osGetTime();
-    setTimeInSeconds = curentTimeInSeconds;
-
-    setSotpTimeValue = curentTimeInSeconds - 5;
-    sotpStatus = sotp_set(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t *)&setSotpTimeValue);
-	TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    sotpStatus = sotp_set(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t *)&setSotpTimeValue);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-
-    status = pal_osSetStrongTime(setTimeInSeconds);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-#if PAL_USE_INTERNAL_FLASH
-    sotpStatus = sotp_get(SOTP_TYPE_SAVED_TIME, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-
-    sotpStatus = sotp_get(SOTP_TYPE_LAST_TIME_BACK, sizeof(uint64_t), (uint32_t*)&sotpGetTime, &actualLenBytes);
-    TEST_ASSERT_EQUAL_HEX(SOTP_SUCCESS, sotpStatus);
-    TEST_ASSERT_NOT_EQUAL(sotpGetTime, setTimeInSeconds);
-#endif
-
-    pal_Time = pal_osGetTime();
-    if (pal_Time - setTimeInSeconds > 5)
-    {
-    	status = PAL_ERR_GENERAL_BASE;
-    }
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-
-#if (PAL_USE_HW_RTC)
-    //restore System time
-    pal_plat_osSetRtcTime(testStartTime + PAL_RUNNING_TEST_TIME);
-#endif
-}
-
 
 /*! \brief This test verify the functionality of the RTC
  *
@@ -1490,103 +1471,8 @@ TEST(pal_rtos, pal_rtc)
     /*#5*/
     pal_plat_osSetRtcTime(sysTime + time1 - PAL_MIN_RTC_SET_TIME  + 1); //add lost time from delay
 
-
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_USE_HW_RTC not set");
 #endif
 }
 
-// the following functions are not part of PAL's external API hence extern
-extern palStatus_t pal_noiseWriteValue(const int32_t* data, uint8_t startBit, uint8_t lenBits, uint8_t* bitsWritten);
-extern palStatus_t pal_noiseWriteBuffer(int32_t* buffer, uint16_t lenBits, uint16_t* bitsWritten);
-extern palStatus_t pal_noiseRead(int32_t buffer[PAL_NOISE_BUFFER_LEN], bool partial, uint16_t* bitsRead);
-
-/*! \brief This test verifies the functionality of noise collection
-*
-* | # |    Step                                                                                    |   Expected  |
-* |---|--------------------------------------------------------------------------------------------|-------------|
-* | 1 | Reset the noise buffer by reading watever is available                                     | PAL_SUCCESS |
-* | 2 | Write an entire int32_t (all bits) and verify writes and that full read not possible       | PAL_SUCCESS |
-* | 3 | Write only some bits of the int32_t and verify writes and that full read not possible      | PAL_SUCCESS |
-* | 4 | Write only some bits of the int32_t, implicitly causing splitting the value into 2 indexes | PAL_SUCCESS |
-* | 5 | Read whatever was collected thus far (partial read) and verify output                      | PAL_SUCCESS |
-* | 6 | Try to read again and verify buffer is empty                                               | PAL_SUCCESS |
-* | 7 | Write a buffer excluding the last 7 bits of the last index and verify results              | PAL_SUCCESS |
-* | 8 | Fill the buffer and try to write some more data into it                                    | PAL_SUCCESS |
-*/
-TEST(pal_rtos, pal_noise)
-{
-    palStatus_t status;
-    int32_t outBuffer[PAL_NOISE_BUFFER_LEN] = { 0 };
-    int32_t inBuffer[] = { 0xB76EC265, 0xD16ACE6E, 0xF56AAD6A };
-    uint16_t bitsWritten = 0;
-    uint16_t bitsRead = 0;
-    int32_t writeValue;
-    uint8_t i;
-
-    /*#1*/
-    pal_noiseRead(outBuffer, true, &bitsRead);
-    memset(outBuffer, 0, PAL_NOISE_SIZE_BYTES);
-
-    /*#2*/
-    writeValue = 0xCB76102A;
-    status = pal_noiseWriteValue(&writeValue, 0, 32, (uint8_t*)&bitsWritten); // write all bits
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_EQUAL(32, bitsWritten);
-    status = pal_noiseRead(outBuffer, false, &bitsRead);
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_RTOS_NOISE_BUFFER_NOT_FULL, status);
-    TEST_ASSERT_EQUAL(0, bitsRead);
-
-    /*#3*/
-    status = pal_noiseWriteValue(&writeValue, 3, 20, (uint8_t*)&bitsWritten); // write some of the bits, starting at bit index 3
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_EQUAL(20, bitsWritten);
-    status = pal_noiseRead(outBuffer, false, &bitsRead);
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_RTOS_NOISE_BUFFER_NOT_FULL, status);
-    TEST_ASSERT_EQUAL(0, bitsRead);
-
-    /*#4*/
-    status = pal_noiseWriteValue(&writeValue, 16, 16, (uint8_t*)&bitsWritten); // write some of the bits, starting at bit index 16, this functionality tests splitting the bits into 2 different indexes
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_EQUAL(16, bitsWritten);
-    status = pal_noiseRead(outBuffer, false, &bitsRead);
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_RTOS_NOISE_BUFFER_NOT_FULL, status);
-    TEST_ASSERT_EQUAL(0, bitsRead);
-
-    /*#5*/
-    status = pal_noiseRead(outBuffer, true, &bitsRead); // read whatever collected (resets buffer)
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_EQUAL(64, bitsRead); // even though we wrote 68 bits by now, output should be 64 since the last byte is not full so we should not receive it back
-    TEST_ASSERT_EQUAL_HEX(0xCB76102A, outBuffer[0]);
-    TEST_ASSERT_EQUAL_HEX(0xB76EC205, outBuffer[1]);
-    TEST_ASSERT_EQUAL_HEX(0, outBuffer[2]);
-    memset(outBuffer, 0, PAL_NOISE_SIZE_BYTES);
-
-    /*#6*/
-    status = pal_noiseRead(outBuffer, false, &bitsRead);
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_RTOS_NOISE_BUFFER_EMPTY, status);
-    TEST_ASSERT_EQUAL(0, bitsRead);
-
-    /*#7*/
-    status = pal_noiseWriteBuffer(inBuffer, ((sizeof(inBuffer) * CHAR_BIT) - 7), &bitsWritten); // write all except for the last 7 bits of index 2
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_EQUAL(((sizeof(inBuffer) * CHAR_BIT) - 7), bitsWritten);
-    status = pal_noiseRead(outBuffer, false, &bitsRead);
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_RTOS_NOISE_BUFFER_NOT_FULL, status);
-    TEST_ASSERT_EQUAL(0, bitsRead);
-    status = pal_noiseRead(outBuffer, true, &bitsRead); // read whatever collected (resets buffer)
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-    TEST_ASSERT_NOT_EQUAL(0, bitsRead);
-    TEST_ASSERT_EQUAL_HEX(inBuffer[0], outBuffer[0]);
-    TEST_ASSERT_EQUAL_HEX(inBuffer[1], outBuffer[1]);
-    TEST_ASSERT_EQUAL_HEX(0x6AAD6A, outBuffer[2]);
-
-    /*#8*/
-    for (i = 0; i <= (sizeof(inBuffer) / sizeof(int32_t)); ++i)
-    {
-        status = pal_noiseWriteBuffer(inBuffer, (sizeof(inBuffer) * CHAR_BIT), &bitsWritten);
-        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
-        TEST_ASSERT_EQUAL_HEX((sizeof(inBuffer) * CHAR_BIT), bitsWritten);
-    }
-    status = pal_noiseWriteBuffer(inBuffer, (sizeof(inBuffer) * CHAR_BIT), &bitsWritten);
-    TEST_ASSERT_EQUAL_HEX(PAL_ERR_RTOS_NOISE_BUFFER_FULL, status);
-    TEST_ASSERT_EQUAL_HEX(0, bitsWritten);
-}

@@ -49,6 +49,7 @@
 #include "include/UpdateClient.h"
 #include "include/UpdateClientResources.h"
 #include "include/CloudClientStorage.h"
+#include "include/ServiceClient.h"
 
 #include "pal.h"
 
@@ -86,15 +87,16 @@ namespace UpdateClient
     static void certificate_done(arm_uc_error_t error,
                                  const arm_uc_buffer_t* fingerprint);
     static void initialization(void);
-    static void initialization_done(int32_t);
+    static void initialization_done(uintptr_t);
     static void event_handler(arm_event_s* event);
     static void queue_handler(void);
     static void schedule_event(void);
     static void error_handler(int32_t error);
     static M2MInterface *_m2m_interface;
+    static ServiceClient *_service;
 }
 
-void UpdateClient::UpdateClient(FP1<void, int32_t> callback, M2MInterface *m2mInterface)
+void UpdateClient::UpdateClient(FP1<void, int32_t> callback, M2MInterface *m2mInterface, ServiceClient *service)
 {
     tr_info("Update Client External Initialization: %p", (void*)pal_osThreadGetId());
 
@@ -103,6 +105,9 @@ void UpdateClient::UpdateClient(FP1<void, int32_t> callback, M2MInterface *m2mIn
 
     if (m2mInterface) {
         _m2m_interface = m2mInterface;
+    }
+    if (service) {
+        _service = service;
     }
     
     /* create event */
@@ -225,7 +230,7 @@ static void UpdateClient::initialization(void)
        work if verification certificates are inserted through the Factory
        Client or by other means.
     */
-    if (result.code != ARM_UC_CM_ERR_NONE)
+    if (result.code != ERR_NONE)
     {
         tr_info("ARM_UC_AddCertificate failed");
 
@@ -246,7 +251,7 @@ static void UpdateClient::certificate_done(arm_uc_error_t error,
        it is still possible to perform updates, which is why the
        Update client initializes anyway.
     */
-    if (error.code != ARM_UC_CM_ERR_NONE)
+    if (error.code != ERR_NONE)
     {
         error_callback.call(WarningCertificateInsertion);
     }
@@ -254,9 +259,12 @@ static void UpdateClient::certificate_done(arm_uc_error_t error,
     ARM_UC_HUB_Initialize(UpdateClient::initialization_done);
 }
 
-static void UpdateClient::initialization_done(int32_t result)
+static void UpdateClient::initialization_done(uintptr_t result)
 {
     tr_info("internal initialization done: %" PRIu32 " %p", result, (void*)pal_osThreadGetId());
+    if (_service) {
+        _service->finish_initialization();
+    }
 }
 
 static void UpdateClient::event_handler(arm_event_s* event)

@@ -14,22 +14,14 @@
  * limitations under the License.
  *******************************************************************************/
  
-#include "pal_BSP.h"
-#include "stdio.h"
+#include "test_runners.h"
 
- void palTLSTestMain(void* network);
-
-//create a public wapper to this & reduce this to one line 
 int main(int argc, char * argv[])
 {
-    bspStatus_t status = BSP_SUCCESS;
-    void* context = NULL;
-    status = initPlatform(&context);
-    if (BSP_SUCCESS == status) 
-    {
-        palTLSTestMain(context);      
-    }
-    return status;
+    (void)argc;
+    (void)argv;
+
+    return palTLSTestMain();
 }
 
 

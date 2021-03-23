@@ -19,7 +19,8 @@
 #ifndef __ARM_UPDATE_SOURCE_H__
 #define __ARM_UPDATE_SOURCE_H__
 
-#include "update-client-common/arm_uc_common.h"
+#include "update-client-common/arm_uc_error.h"
+#include "update-client-common/arm_uc_types_internal.h"
 
 #include <stdint.h>
 
@@ -52,13 +53,13 @@ typedef enum _ARM_SOURCE_EVENT {
     EVENT_KEYTABLE,
     EVENT_ERROR,
     EVENT_ERROR_SOURCE,
-    EVENT_ERROR_BUFFER_SIZE
+    EVENT_ERROR_BUFFER_SIZE,
 } ARM_SOURCE_EVENT;
 
 /**
  * @brief Prototype for event handler.
  */
-typedef void (*ARM_SOURCE_SignalEvent_t)(uint32_t event);
+typedef void (*ARM_SOURCE_SignalEvent_t)(uintptr_t event);
 
 /**
  * @brief Structure definition holding API function pointers.

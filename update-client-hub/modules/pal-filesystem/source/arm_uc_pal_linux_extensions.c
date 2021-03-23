@@ -22,9 +22,7 @@
 
 #include "update-client-pal-filesystem/arm_uc_pal_extensions.h"
 
-#include "update-client-common/arm_uc_metadata_header_v2.h"
-#include "update-client-common/arm_uc_types.h"
-#include "update-client-common/arm_uc_utilities.h"
+#include "update-client-metadata-header/arm_uc_metadata_header_v2.h"
 #include "arm_uc_pal_filesystem_utils.h"
 
 #include "pal.h"
@@ -36,6 +34,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #ifndef MBED_CONF_UPDATE_CLIENT_APPLICATION_DETAILS
 #define MBED_CONF_UPDATE_CLIENT_APPLICATION_DETAILS 0
@@ -45,14 +44,14 @@
 #define MBED_CONF_UPDATE_CLIENT_BOOTLOADER_DETAILS 0
 #endif
 
-static void (*arm_ucex_linux_callback)(uint32_t) = NULL;
+static void (*arm_ucex_linux_callback)(uintptr_t) = NULL;
 static palImageId_t arm_ucex_activate_image_id;
 
 #ifndef PAL_UPDATE_ACTIVATE_SCRIPT
 #define PAL_UPDATE_ACTIVATE_SCRIPT "./activate_script"
 #endif
 
-arm_uc_error_t pal_ext_imageInitAPI(void (*callback)(uint32_t))
+arm_uc_error_t pal_ext_imageInitAPI(void (*callback)(uintptr_t))
 {
     arm_uc_error_t result = { .code = ERR_NONE };
 
@@ -97,7 +96,7 @@ arm_uc_error_t pal_ext_installerGetDetails(arm_uc_installer_details_t *details)
     return result;
 }
 
-static void pal_ext_imageActivationWorker(void *location)
+static void pal_ext_imageActivationWorker(const void *location)
 {
     char cmd_buf[sizeof(PAL_UPDATE_ACTIVATE_SCRIPT) + 1 + PAL_MAX_FILE_AND_FOLDER_LENGTH + 1];
     char path_buf[PAL_MAX_FILE_AND_FOLDER_LENGTH];
@@ -153,7 +152,7 @@ arm_uc_error_t pal_ext_imageActivate(uint32_t location)
         tr_err("Thread creation failed with %x", rc);
         err.code = ERR_INVALID_PARAMETER;
     } else {
-        tr_debug("Activation thread created, thread ID: %" PRIu32, thread_id);
+        tr_debug("Activation thread created, thread ID: %" PRIuPTR, thread_id);
         err.code = ERR_NONE;
     }
 

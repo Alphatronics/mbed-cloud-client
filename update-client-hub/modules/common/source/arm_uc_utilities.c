@@ -53,6 +53,7 @@ arm_uc_error_t arm_uc_str2uri(const uint8_t *buffer,
         uint8_t *colon = NULL;
         uint8_t *slash = NULL;
         uint32_t len = 0;
+        uint8_t slash_count = 0;
 
         /* find scheme by searching for first colon */
         colon = memchr(str, ':', buffer_size);
@@ -82,70 +83,90 @@ arm_uc_error_t arm_uc_str2uri(const uint8_t *buffer,
             } else if (memcmp(uri->ptr, "coaps:", 6) == 0) {
                 uri->scheme = URI_SCHEME_COAPS;
                 uri->port = 5683;
+            } else if (memcmp(uri->ptr, "file:", 5) == 0) {
+                uri->scheme = URI_SCHEME_FILE;
             } else {
                 uri->scheme = URI_SCHEME_NONE;
             }
 
             /* only continue if scheme is supported */
             if (uri->scheme != URI_SCHEME_NONE) {
-                /* strip any leading '/' */
+                /* strip leading '/', but at most two of them, since 'file://' URIs
+                   might have a third '/' when specifying absolute paths */
                 str = colon + 1;
                 for (str += 1;
-                        (str[0] == '/') && (str < (buffer + buffer_size));
-                        ++str);
+                        (str[0] == '/') && (str < (buffer + buffer_size) && (slash_count < 1));
+                        ++str, ++slash_count);
 
-                /* find separation between host and path */
-                slash = memchr(str, '/', buffer_size - (str - buffer));
+                /* File URIs only have the 'path' component, so they need to
+                   be handled separately */
+                if (uri->scheme == URI_SCHEME_FILE) {
+                    /* host part will be empty */
+                    uri->ptr[0] = '\0';
+                    uri->host = (char *)uri->ptr;
 
-                if (slash != NULL) {
-                    bool parsed = true;
+                    /* path is the whole data after "file://" */
+                    len = buffer_size - (str - buffer);
+                    memcpy(uri->ptr + 1, str, len);
+                    uri->ptr[len + 1] = '\0';
+                    uri->path = (char *)uri->ptr + 1;
+                    uri->size = len + 2;
 
-                    /* find optional port */
-                    colon = memchr(str, ':', buffer_size - (slash - buffer));
+                    result = (arm_uc_error_t) { ERR_NONE };
+                } else {
+                    /* find separation between host and path */
+                    slash = memchr(str, '/', buffer_size - (str - buffer));
 
-                    if (colon != NULL) {
-                        uri->port = arm_uc_str2uint32(colon + 1,
-                                                      buffer_size - (colon - buffer),
-                                                      &parsed);
-                        len = colon - str;
-                    } else {
-                        len = slash - str;
-                    }
+                    if (slash != NULL) {
+                        bool parsed = true;
 
-                    /* check */
-                    if ((parsed == 1) && (len < uri->size_max)) {
-                        /* copy host name to URI buffer */
-                        memcpy(uri->ptr, str, len);
+                        /* find optional port */
+                        colon = memchr(str, ':', buffer_size - (slash - buffer));
 
-                        /* \0 terminate string */
-                        uri->ptr[len] = '\0';
-
-                        /* update length */
-                        uri->size = len + 1;
-
-                        /* set host pointer */
-                        uri->host = (char *) uri->ptr;
-
-                        /* find remaining path length */
-                        str = slash;
-                        len = arm_uc_strnlen(str, buffer_size - (str - buffer));
+                        if (colon != NULL) {
+                            uri->port = arm_uc_str2uint32(colon + 1,
+                                                          buffer_size - (colon - buffer),
+                                                          &parsed);
+                            len = colon - str;
+                        } else {
+                            len = slash - str;
+                        }
 
                         /* check */
-                        if ((len > 0) && (len < (uri->size_max - uri->size))) {
-                            /* copy path to URI buffer */
-                            memcpy(&uri->ptr[uri->size], str, len);
-
-                            /* set path pointer */
-                            uri->path = (char *) &uri->ptr[uri->size];
+                        if ((parsed == 1) && (len < uri->size_max)) {
+                            /* copy host name to URI buffer */
+                            memcpy(uri->ptr, str, len);
 
                             /* \0 terminate string */
-                            uri->ptr[uri->size + len] = '\0';
+                            uri->ptr[len] = '\0';
 
-                            /* update length after path pointer is set */
-                            uri->size += len + 1;
+                            /* update length */
+                            uri->size = len + 1;
 
-                            /* parsing passed all checks */
-                            result = (arm_uc_error_t) { ERR_NONE };
+                            /* set host pointer */
+                            uri->host = (char *) uri->ptr;
+
+                            /* find remaining path length */
+                            str = slash;
+                            len = arm_uc_strnlen(str, buffer_size - (str - buffer));
+
+                            /* check */
+                            if ((len > 0) && (len < (uri->size_max - uri->size))) {
+                                /* copy path to URI buffer */
+                                memcpy(&uri->ptr[uri->size], str, len);
+
+                                /* set path pointer */
+                                uri->path = (char *) &uri->ptr[uri->size];
+
+                                /* \0 terminate string */
+                                uri->ptr[uri->size + len] = '\0';
+
+                                /* update length after path pointer is set */
+                                uri->size += len + 1;
+
+                                /* parsing passed all checks */
+                                result = (arm_uc_error_t) { ERR_NONE };
+                            }
                         }
                     }
                 }
@@ -324,108 +345,6 @@ uint32_t arm_uc_str2uint32(const uint8_t *buffer,
     return output;
 }
 
-uint32_t arm_uc_crc32(const uint8_t *buffer, uint32_t length)
-{
-    const uint8_t *current = buffer;
-    uint32_t crc = 0xFFFFFFFF;
-
-    while (length--) {
-        crc ^= *current++;
-
-        for (uint32_t counter = 0; counter < 8; counter++) {
-            if (crc & 1) {
-                crc = (crc >> 1) ^ 0xEDB88320;
-            } else {
-                crc = crc >> 1;
-            }
-        }
-    }
-
-    return (crc ^ 0xFFFFFFFF);
-}
-
-uint32_t arm_uc_parse_uint32(const uint8_t *input)
-{
-    uint32_t result = 0;
-
-    if (input) {
-        result = input[0];
-        result = (result << 8) | input[1];
-        result = (result << 8) | input[2];
-        result = (result << 8) | input[3];
-    }
-
-    return result;
-}
-
-uint64_t arm_uc_parse_uint64(const uint8_t *input)
-{
-    uint64_t result = 0;
-
-    if (input) {
-        result = input[0];
-        result = (result << 8) | input[1];
-        result = (result << 8) | input[2];
-        result = (result << 8) | input[3];
-        result = (result << 8) | input[4];
-        result = (result << 8) | input[5];
-        result = (result << 8) | input[6];
-        result = (result << 8) | input[7];
-    }
-
-    return result;
-}
-
-void arm_uc_write_uint32(uint8_t *buffer, uint32_t value)
-{
-    if (buffer) {
-        buffer[3] = value;
-        buffer[2] = (value >> 8);
-        buffer[1] = (value >> 16);
-        buffer[0] = (value >> 24);
-    }
-}
-
-void arm_uc_write_uint64(uint8_t *buffer, uint64_t value)
-{
-    if (buffer) {
-        buffer[7] = value;
-        buffer[6] = (value >> 8);
-        buffer[5] = (value >> 16);
-        buffer[4] = (value >> 24);
-        buffer[3] = (value >> 32);
-        buffer[2] = (value >> 40);
-        buffer[1] = (value >> 48);
-        buffer[0] = (value >> 56);
-    }
-}
-
-// Constant time binary comparison
-uint32_t ARM_UC_BinCompareCT(const arm_uc_buffer_t *a, const arm_uc_buffer_t *b)
-{
-    uint32_t result;
-    uint32_t i;
-    const uint32_t *wa = (uint32_t *)a->ptr;
-    const uint32_t *wb = (uint32_t *)b->ptr;
-    const uint32_t bytes_aligned = a->size & ~((1 << sizeof(uint32_t)) - 1);
-    const uint32_t bytes = a->size;
-
-    // Check sizes
-    if (a->size != b->size) {
-        return 1;
-    }
-    result = 0;
-    for (i = 0; i < bytes_aligned; i += sizeof(uint32_t)) {
-        const uint32_t idx = i / sizeof(uint32_t);
-        result = result | (wa[idx] ^ wb[idx]);
-    }
-    for (; i < bytes; i++) {
-        result = result | (a->ptr[i] ^ b->ptr[i]);
-    }
-    // Reduce to 0 or 1 in constant time
-    return (result | -result) >> 31;
-}
-
 static const uint8_t base64EncodeArray[65] = {MBED_CLOUD_UPDATE_BASE64_CHARSET};
 
 uint8_t *ARM_UC_Base64Enc(uint8_t *buf, const uint32_t size, const arm_uc_buffer_t *bin)
@@ -500,4 +419,24 @@ void ARM_UC_Base64Dec(arm_uc_buffer_t *bin, const uint32_t size, const uint8_t *
         }
     }
     bin->size = optr - (uintptr_t)bin->ptr;
+}
+
+size_t arm_uc_calculate_full_uri_length(const arm_uc_uri_t *uri)
+{
+
+    size_t scheme_length = 0;
+
+    if (uri->scheme == URI_SCHEME_COAPS) {
+        scheme_length = strlen(UC_COAPS_STRING) + 1;
+    } else if (uri->scheme == URI_SCHEME_HTTP) {
+        scheme_length = strlen(UC_HTTP_STRING) + 1;
+    } else if (uri->scheme == URI_SCHEME_FILE) {
+        scheme_length = strlen(UC_FILE_STRING) + 1;
+    } else {
+        return 0; // Not supported scheme
+    }
+
+    return (uri->size +
+            strlen(uri->path) +
+            scheme_length);
 }

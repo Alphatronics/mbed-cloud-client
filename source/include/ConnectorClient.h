@@ -36,7 +36,13 @@
 
 class ConnectorClientCallback;
 
+#if MBED_CLOUD_CLIENT_STD_NAMESPACE_POLLUTION
+// We should not really pollute application's namespace with std by having this in
+// a public header file.
+// But as as removal of the next line may break existing applications, which build due to this
+// leakage, we need to maintain the old behavior for a while and just allow one to remove it.
 using namespace std;
+#endif
 
 
 /**
@@ -56,6 +62,9 @@ public:
     String                          account_id;
     String                          internal_endpoint_name;
     M2MSecurity::SecurityModeType   mode;
+#ifdef MBED_CLOUD_CLIENT_EDGE_EXTENSION
+    String                          lwm2m_server_uri;
+#endif
 };
 
 /**
@@ -103,6 +112,14 @@ public:
     *  \brief Destructor.
     */
     ~ConnectorClient();
+
+    /**
+     * \brief Perform the second phase set up which is not possible from constructor.
+     * This must be called successfully after constructor and before
+     * continuing to state machine.
+     * \return true, if success and instance is ready to use
+     */
+    bool setup();
 
     /**
     *  \brief Starts the bootstrap sequence from the Service Client.
@@ -176,6 +193,13 @@ public:
    */
    const EstClient &est_client();
 #endif /* MBED_CLIENT_DISABLE_EST_FEATURE */
+
+   /**
+   * \brief Starts bootstrap sequence again.
+   * This will clean the old LwM2M credentials.
+   *
+   */
+   void bootstrap_again();
 
 public:
     // implementation of M2MInterfaceObserver:
@@ -330,7 +354,7 @@ private:
      * \brief A utility function to create an M2MSecurity object
      * for registration.
      */
-    void create_register_object();
+    bool create_register_object();
 
     /**
      * \brief A utility function to create an M2MSecurity object
@@ -352,12 +376,6 @@ private:
      * \param security, The Bootstrap certificates.
      */
     ccs_status_e set_bootstrap_credentials(M2MSecurity *security);
-
-    /**
-     * \brief A utility function to set the bootstrap address in storage.
-     * \param security, The bootstrap security object containing the address.
-     */
-    ccs_status_e store_bootstrap_address(M2MSecurity *security);
 
     /**
      * \brief A utility function to check whether bootstrap credentials are stored in KCM.
@@ -393,6 +411,7 @@ private:
     StartupSubStateRegistration         _current_state;
     bool                                _event_generated;
     bool                                _state_engine_running;
+    bool                                _setup_complete;
     M2MInterface                        *_interface;
     M2MSecurity                         *_security;
     ConnectorClientEndpointInfo         _endpoint_info;
@@ -400,6 +419,7 @@ private:
     M2MTimer                            _rebootstrap_timer;
     uint16_t                            _bootstrap_security_instance;
     uint16_t                            _lwm2m_security_instance;
+    uint16_t                            _rebootstrap_time;
     void                                *_certificate_chain_handle;
 #ifndef MBED_CLIENT_DISABLE_EST_FEATURE
     EstClient                           _est_client;

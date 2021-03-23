@@ -79,7 +79,7 @@ typedef struct arm_uc_mm_validate_signature_context {
         enum arm_uc_mm_pk_sig_state  pk_state;
         enum arm_uc_mm_psk_sig_state psk_state;
     };
-    void (* applicationEventHandler)(uint32_t);
+    void (* applicationEventHandler)(uintptr_t);
     union {
 #if defined(ARM_UC_FEATURE_MANIFEST_PUBKEY) && (ARM_UC_FEATURE_MANIFEST_PUBKEY == 1)
         struct {
@@ -239,7 +239,7 @@ struct arm_uc_mmPersistentContext_t {
     uint32_t errorLine;
     struct arm_uc_mmContext_t **ctx;
     arm_uc_callback_t applicationCallbackStorage; // initialized in mmCommon
-    void (*applicationEventHandler)(uint32_t);
+    void (*applicationEventHandler)(uintptr_t);
     arm_uc_error_t (*testFSM)(uint32_t event);
 #if ARM_UC_MM_ENABLE_TEST_VECTORS
     ARM_UC_mmTestHook_t testHook;
@@ -256,7 +256,7 @@ static inline arm_uc_mmContext_t *arm_uc_mmBuf2Context(arm_uc_buffer_t *b)
 
 static inline arm_uc_error_t arm_uc_mmContextBufSizeCheck(arm_uc_buffer_t *b)
 {
-    arm_uc_error_t err = { .code = MFST_ERR_NONE };
+    arm_uc_error_t err = { .code = ERR_NONE };
     if (b->size_max < sizeof(arm_uc_mmContext_t)) {
         err.code = MFST_ERR_SIZE;
         return err;

@@ -38,15 +38,11 @@ extern "C" {
 #define MAX_TOKEN_SIZE 8
 #define MAX_URI_QUERY_LEN 255
 
-#ifdef YOTTA_CFG_DISABLE_INTERFACE_DESCRIPTION
-#define DISABLE_INTERFACE_DESCRIPTION YOTTA_CFG_DISABLE_INTERFACE_DESCRIPTION
-#elif defined MBED_CONF_MBED_CLIENT_DISABLE_INTERFACE_DESCRIPTION
+#if defined MBED_CONF_MBED_CLIENT_DISABLE_INTERFACE_DESCRIPTION
 #define DISABLE_INTERFACE_DESCRIPTION MBED_CONF_MBED_CLIENT_DISABLE_INTERFACE_DESCRIPTION
 #endif
 
-#ifdef YOTTA_CFG_DISABLE_RESOURCE_TYPE
-#define DISABLE_RESOURCE_TYPE YOTTA_CFG_DISABLE_RESOURCE_TYPE
-#elif defined MBED_CONF_MBED_CLIENT_DISABLE_RESOURCE_TYPE
+#if defined MBED_CONF_MBED_CLIENT_DISABLE_RESOURCE_TYPE
 #define DISABLE_RESOURCE_TYPE MBED_CONF_MBED_CLIENT_DISABLE_RESOURCE_TYPE
 #endif
 
@@ -787,6 +783,17 @@ extern uint16_t sn_nsdl_get_block_size(const struct nsdl_s *handle);
  * \return  Retransmission count
  */
 extern uint8_t sn_nsdl_get_retransmission_count(struct nsdl_s *handle);
+
+/**
+ * \fn extern int32_t sn_nsdl_send_coap_ping(struct nsdl_s *handle);
+ *
+ * \brief Send confirmable CoAP ping message.
+ *
+ * \param   *handle Pointer to nsdl-library handle
+ *
+ * \return message ID, 0 if failed
+ */
+extern int32_t sn_nsdl_send_coap_ping(struct nsdl_s *handle);
 
 #ifdef __cplusplus
 }

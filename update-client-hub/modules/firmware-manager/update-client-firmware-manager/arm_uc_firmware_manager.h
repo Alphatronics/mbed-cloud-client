@@ -22,7 +22,7 @@
 #include "update-client-paal/arm_uc_paal_update_api.h"
 #include "update-client-common/arm_uc_common.h"
 
-typedef void (*ARM_UCFM_SignalEvent_t)(uint32_t event);
+typedef void (*ARM_UCFM_SignalEvent_t)(uintptr_t event);
 
 #define UCFM_MAX_BLOCK_SIZE 16
 
@@ -37,6 +37,7 @@ typedef enum {
     UCFM_EVENT_GET_INSTALLER_DETAILS_DONE        = ARM_UC_PAAL_EVENT_GET_INSTALLER_DETAILS_DONE,
     UCFM_EVENT_INITIALIZE_ERROR                  = ARM_UC_PAAL_EVENT_INITIALIZE_ERROR,
     UCFM_EVENT_PREPARE_ERROR                     = ARM_UC_PAAL_EVENT_PREPARE_ERROR,
+    UCFM_EVENT_FIRMWARE_TOO_LARGE_ERROR          = ARM_UC_PAAL_EVENT_FIRMWARE_TOO_LARGE_ERROR,
     UCFM_EVENT_WRITE_ERROR                       = ARM_UC_PAAL_EVENT_WRITE_ERROR,
     UCFM_EVENT_FINALIZE_ERROR                    = ARM_UC_PAAL_EVENT_FINALIZE_ERROR,
     UCFM_EVENT_ACTIVATE_ERROR                    = ARM_UC_PAAL_EVENT_ACTIVATE_ERROR,

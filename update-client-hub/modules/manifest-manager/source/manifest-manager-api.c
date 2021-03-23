@@ -41,10 +41,10 @@
  * @details This file specifies the API used to interact with the manifest manager
  */
 
-arm_uc_error_t ARM_UC_mmInit(arm_uc_mmContext_t **mmCtx, void (*event_handler)(uint32_t),
+arm_uc_error_t ARM_UC_mmInit(arm_uc_mmContext_t **mmCtx, void (*event_handler)(uintptr_t),
                              const arm_pal_key_value_api *api)
 {
-    arm_uc_error_t err = {MFST_ERR_NONE};
+    arm_uc_error_t err = {ERR_NONE};
     if (mmCtx == NULL || *mmCtx == NULL) {
         return (arm_uc_error_t) {MFST_ERR_NULL_PTR};
     }
@@ -66,7 +66,7 @@ arm_uc_error_t ARM_UC_mmInit(arm_uc_mmContext_t **mmCtx, void (*event_handler)(u
     ctx->init.state = ARM_UC_MM_INIT_BEGIN;
 
     err = ARM_UC_mmSetState(ARM_UC_MM_STATE_INIT);
-    if (err.code != MFST_ERR_NONE) {
+    if (err.code != ERR_NONE) {
         return err;
     }
     // Start the Init FSM
@@ -84,7 +84,7 @@ arm_uc_error_t ARM_UC_mmInsert(arm_uc_mmContext_t **ctx, arm_uc_buffer_t *buffer
     arm_uc_mmPersistentContext.ctx = ctx;
     // Setup the state machine
     arm_uc_error_t err = ARM_UC_mmSetState(ARM_UC_MM_STATE_INSERTING);
-    if (err.code != MFST_ERR_NONE) {
+    if (err.code != ERR_NONE) {
         return err;
     }
     struct arm_uc_mmInsertContext_t *insertCtx = &(*arm_uc_mmPersistentContext.ctx)->insert;
@@ -101,7 +101,7 @@ arm_uc_error_t ARM_UC_mmInsert(arm_uc_mmContext_t **ctx, arm_uc_buffer_t *buffer
 
     // Start the FSM
     ARM_UC_PostCallback(&insertCtx->callbackStorage, ARM_UC_mmCallbackFSMEntry, ARM_UC_MM_EVENT_BEGIN);
-    return (arm_uc_error_t) {MFST_ERR_NONE};
+    return (arm_uc_error_t) {ERR_NONE};
 }
 arm_uc_error_t ARM_UC_mmFetchFirmwareInfo(arm_uc_mmContext_t **ctx, struct manifest_firmware_info_t *info,
                                           const arm_uc_manifest_handle_t *ID)
@@ -112,7 +112,7 @@ arm_uc_error_t ARM_UC_mmFetchFirmwareInfo(arm_uc_mmContext_t **ctx, struct manif
     arm_uc_mmPersistentContext.ctx = ctx;
     // Initialize the state machine
     arm_uc_error_t err = ARM_UC_mmSetState(ARM_UC_MM_STATE_FWINFO);
-    if (err.code != MFST_ERR_NONE) {
+    if (err.code != ERR_NONE) {
         return err;
     }
     struct arm_uc_mm_fw_context_t *fwCtx = &(*arm_uc_mmPersistentContext.ctx)->getFw;
@@ -125,7 +125,7 @@ arm_uc_error_t ARM_UC_mmFetchFirmwareInfo(arm_uc_mmContext_t **ctx, struct manif
     // Start the state machine
     ARM_UC_PostCallback(&fwCtx->callbackStorage, ARM_UC_mmCallbackFSMEntry, ARM_UC_MM_EVENT_BEGIN);
 
-    return (arm_uc_error_t) {MFST_ERR_NONE};
+    return (arm_uc_error_t) {ERR_NONE};
 }
 arm_uc_error_t ARM_UC_mmFetchNextFirmwareInfo(struct manifest_firmware_info_t *info)
 {
@@ -137,17 +137,31 @@ arm_uc_error_t ARM_UC_mmFetchNextFirmwareInfo(struct manifest_firmware_info_t *i
 
     // Continue the state machine
     ARM_UC_PostCallback(&fwCtx->callbackStorage, ARM_UC_mmCallbackFSMEntry, ARM_UC_MM_EVENT_BEGIN);
-    return (arm_uc_error_t) {MFST_ERR_NONE};
+    return (arm_uc_error_t) {ERR_NONE};
 }
 arm_uc_error_t ARM_UC_mmGetError()
 {
     return arm_uc_mmPersistentContext.reportedError;
 }
 
+int ARM_UC_mmCheckFormatUint32(manifest_guid_t* format, uint32_t expected)
+{
+    manifest_guid_t local;
+    // Fix alignment problems
+    memcpy(&local, format, sizeof(local));
+
+    int fail = 0;
+    fail = fail || local.words[0] != 0;
+    fail = fail || local.words[1] != 0;
+    fail = fail || local.words[2] != 0;
+    fail = fail || local.words[3] != htobe(expected);
+    return !fail;
+}
+
 #if ARM_UC_MM_ENABLE_TEST_VECTORS
 arm_uc_error_t ARM_UC_mmRegisterTestHook(ARM_UC_mmTestHook_t hook)
 {
-    arm_uc_error_t err = {MFST_ERR_NONE};
+    arm_uc_error_t err = {ERR_NONE};
     arm_uc_mmPersistentContext.testHook = hook;
     return err;
 }

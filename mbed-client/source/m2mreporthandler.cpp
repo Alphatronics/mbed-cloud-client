@@ -190,7 +190,7 @@ bool M2MReportHandler::parse_notification_attribute(const char *query,
         for (int option = 0; option < num_options; option++) {
             success = set_notification_attribute(query_options[option],type, resource_type);
             if (!success) {
-                tr_debug("M2MReportHandler::parse_notification_attribute - break");
+                tr_error("M2MReportHandler::parse_notification_attribute - break");
                 break;
             }
         }
@@ -263,21 +263,26 @@ bool M2MReportHandler::set_notification_attribute(const char* option,
 {
     tr_debug("M2MReportHandler::set_notification_attribute()");
     bool success = false;
-    char attribute[20];
-    char value[20];
-    memset(&attribute, 0, 20);
-    memset(&value, 0, 20);
+    const int max_size = 20;
+    char attribute[max_size];
+    char value[max_size];
 
     const char* pos = strstr(option, EQUAL);
-    if( pos != NULL ){
-        memcpy(attribute, option, (size_t)(pos-option));
+    if (pos) {
+        size_t attr_len = pos - option;
+        // Skip the "=" mark
         pos++;
-        memcpy(value, pos, strlen(pos));
-    }else{
-        memcpy(attribute, option, (size_t)strlen(option) + 1);
+        size_t value_len = strlen(pos);
+        if (value_len && value_len < max_size && attr_len < max_size) {
+            memcpy(attribute, option, attr_len);
+            attribute[attr_len] = '\0';
+            memcpy(value, pos, value_len);
+            value[value_len] = '\0';
+            success = true;
+        }
     }
 
-    if (strlen(value)) {
+    if (success) {
         if (strcmp(attribute, PMIN) == 0) {
            _pmin = atoi(value);
             success = true;
@@ -318,16 +323,22 @@ bool M2MReportHandler::set_notification_attribute(const char* option,
 
             _attribute_state |= M2MReportHandler::St;
             tr_info("M2MReportHandler::set_notification_attribute %s to %f", attribute, _st);
+        } else {
+            tr_error("M2MReportHandler::set_notification_attribute - unknown write attribute!");
+            success = false;
         }
+
         // Return false if try to set gt,lt or st when the resource type is something else than numerical
-        if ((resource_type != M2MResourceInstance::INTEGER &&
-                resource_type != M2MResourceInstance::FLOAT) &&
-                ((_attribute_state & M2MReportHandler::Gt) == M2MReportHandler::Gt ||
-                (_attribute_state & M2MReportHandler::Lt) == M2MReportHandler::Lt ||
-                (_attribute_state & M2MReportHandler::St) == M2MReportHandler::St)) {
+        if (success &&
+            (resource_type != M2MResourceInstance::INTEGER && resource_type != M2MResourceInstance::FLOAT) &&
+            ((_attribute_state & M2MReportHandler::Gt) == M2MReportHandler::Gt ||
+            (_attribute_state & M2MReportHandler::Lt) == M2MReportHandler::Lt ||
+            (_attribute_state & M2MReportHandler::St) == M2MReportHandler::St)) {
             tr_debug("M2MReportHandler::set_notification_attribute - not numerical resource");
             success = false;
         }
+    } else {
+        tr_error("M2MReportHandler::set_notification_attribute - failed to parse query!");
     }
     return success;
 }
@@ -611,7 +622,7 @@ void M2MReportHandler::set_observation_token(const uint8_t *token, const uint8_t
      _token_length = 0;
 
     if( token != NULL && length > 0 ) {
-        _token = alloc_string_copy((uint8_t *)token, length);
+        _token = alloc_copy((uint8_t *)token, length);
         if(_token) {
             _token_length = length;
         }
@@ -649,14 +660,13 @@ bool M2MReportHandler::is_under_observation() const
     return _is_under_observation;
 }
 
-uint8_t* M2MReportHandler::alloc_string_copy(const uint8_t* source, uint32_t size)
+uint8_t* M2MReportHandler::alloc_copy(const uint8_t* source, uint32_t size)
 {
     assert(source != NULL);
 
-    uint8_t* result = (uint8_t*)malloc(size + 1);
+    uint8_t* result = (uint8_t*)malloc(size);
     if (result) {
         memcpy(result, source, size);
-        result[size] = '\0';
     }
     return result;
 }

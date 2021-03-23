@@ -17,13 +17,13 @@
 #ifndef __CERTIFICATE_ENROLLMENT_CLIENT_H__
 #define __CERTIFICATE_ENROLLMENT_CLIENT_H__
 
-#include "mbed-client/m2mresource.h"
 #include "mbed-client/m2minterface.h"
-#include "stdio.h"
 #include "ce_defs.h"
-#include "EstClient.h"
+
+class EstClient;
 
 namespace CertificateEnrollmentClient {
+    
     /**
     * \brief Create the Certificate renewal LWM2M object, instance and resource and push the object to the list
     * Also save the pointers to the object and resource, register the event handler, and create the renewal_mutex

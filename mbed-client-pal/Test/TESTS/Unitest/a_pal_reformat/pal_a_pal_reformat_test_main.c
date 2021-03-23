@@ -14,23 +14,12 @@
  * limitations under the License.
  *******************************************************************************/
 
-#include "pal_BSP.h"
-#include "stdio.h"
-#include "PlatIncludes.h"
+#include "test_runners.h"
 
-void palSanityTestMain(void* network);
-
-
-//create a public wapper to this & reduce this to one line 
 int main(int argc, char * argv[])
 {
-    bspStatus_t status = BSP_SUCCESS;
-    int err =0;
-    void* context = NULL;
-    status = initPlatformReformat(&context);
-    if (BSP_SUCCESS == status)
-    {
-    	palSanityTestMain(context);
-    }
-    return status;
+    (void)argc;
+    (void)argv;
+
+    return palReformatTestMain();
 }

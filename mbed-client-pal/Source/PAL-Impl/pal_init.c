@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright 2016, 2017 ARM Ltd.
+ * Copyright 2016-2019 ARM Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include "pal_plat_network.h"
 #include "pal_plat_TLS.h"
 #include "pal_plat_Crypto.h"
+#include "pal_plat_drbg.h"
 #include "pal_macros.h"
 #include "sotp.h"
 
@@ -27,18 +28,22 @@
 //this variable must be a int32_t for using atomic increment
 PAL_PRIVATE int32_t g_palIntialized = 0;
 
-
 PAL_PRIVATE void pal_modulesCleanup(void)
 {
     DEBUG_PRINT("Destroying modules\r\n");
     pal_plat_socketsTerminate(NULL);
+    pal_plat_DRBGDestroy();
+#ifndef MBED_CONF_MBED_CLOUD_CLIENT_EXTERNAL_SST_SUPPORT
     sotp_deinit();
+#endif
     pal_plat_cleanupCrypto();
     pal_cleanupTLS();
     pal_fsCleanup();
+#ifndef MBED_CONF_MBED_CLOUD_CLIENT_EXTERNAL_SST_SUPPORT
     #if PAL_USE_INTERNAL_FLASH
         pal_internalFlashDeInit();
     #endif
+#endif
     pal_RTOSDestroy();
 }
 
@@ -55,7 +60,7 @@ palStatus_t pal_init(void)
     // if increased for the 1st time
     if (1 == currentInitValue)
     {
-        DEBUG_PRINT("\nInit for the 1st time, initializing the modules\r\n");
+        DEBUG_PRINT("Init for the 1st time, initializing the modules\r\n");
         status = pal_RTOSInitialize(NULL);
         if (PAL_SUCCESS == status)
         {
@@ -84,6 +89,7 @@ palStatus_t pal_init(void)
                     else
                     {
                         DEBUG_PRINT("Internal Flash init\r\n");
+
                         #if PAL_USE_INTERNAL_FLASH
                             status = pal_internalFlashInit();
                         #endif
@@ -94,8 +100,11 @@ palStatus_t pal_init(void)
 
                         else
                         {
+#ifndef MBED_CONF_MBED_CLOUD_CLIENT_EXTERNAL_SST_SUPPORT
                             DEBUG_PRINT("SOTP init\r\n");
+
                             sotpStatus = sotp_init();
+#endif
                             if (SOTP_SUCCESS != sotpStatus)
                             {
                                 DEBUG_PRINT("init of SOTP module has failed with status %" PRIx32 "\r\n", (int32_t)sotpStatus);
@@ -103,10 +112,10 @@ palStatus_t pal_init(void)
                             }
                             if (PAL_SUCCESS == status)
                             {
-                                status = pal_initTime();
+                                status = pal_plat_DRBGInit();
                                 if (PAL_SUCCESS != status)
                                 {
-                                    DEBUG_PRINT("init of Time module has failed with status %" PRIx32 "\r\n",status);
+                                    DEBUG_PRINT("init of DRBG module has failed with status %" PRIx32 "\r\n",status);
                                 }
                             }
                         }
@@ -148,6 +157,7 @@ int32_t  pal_destroy(void)
             pal_modulesCleanup();
         }
     }
+
     return currentInitValue;
 }
 

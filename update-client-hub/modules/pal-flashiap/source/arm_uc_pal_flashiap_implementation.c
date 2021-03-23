@@ -23,15 +23,9 @@
 #define __STDC_FORMAT_MACROS
 
 #include "update-client-pal-flashiap/arm_uc_pal_flashiap.h"
-
 #include "update-client-pal-flashiap/arm_uc_pal_flashiap_platform.h"
+#include "update-client-metadata-header/arm_uc_metadata_header_v2.h"
 
-#include "update-client-common/arm_uc_metadata_header_v2.h"
-#include "update-client-common/arm_uc_types.h"
-#include "update-client-common/arm_uc_utilities.h"
-
-#define TRACE_GROUP "UCPI"
-#include "update-client-common/arm_uc_trace.h"
 #include <inttypes.h>
 #include <stddef.h>
 
@@ -45,6 +39,10 @@
 
 #ifndef MBED_CONF_UPDATE_CLIENT_STORAGE_ADDRESS
 #define MBED_CONF_UPDATE_CLIENT_STORAGE_ADDRESS 0
+#endif
+
+#ifndef MBED_CONF_UPDATE_CLIENT_STORAGE_SIZE
+#define MBED_CONF_UPDATE_CLIENT_STORAGE_SIZE 0
 #endif
 
 #ifndef MBED_CONF_UPDATE_CLIENT_STORAGE_PAGE
@@ -283,7 +281,7 @@ arm_uc_error_t ARM_UC_PAL_FlashIAP_Prepare(uint32_t slot_id,
                          0) - slot_addr;
 
         if ((result.error == ERR_NONE) && (erase_size > slot_size)) {
-            result.code = ERR_INVALID_PARAMETER;
+            result.code = PAAL_ERR_FIRMWARE_TOO_LARGE;
             UC_PAAL_ERR_MSG("Firmware too large! required %" PRIX32 " available: %" PRIX32,
                             erase_size, slot_size);
         }

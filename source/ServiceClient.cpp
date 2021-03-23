@@ -23,7 +23,6 @@
 #endif
 #include <inttypes.h>
 
-#include <string>
 #include "include/ServiceClient.h"
 #include "include/CloudClientStorage.h"
 #include "include/UpdateClientResources.h"
@@ -31,9 +30,15 @@
 #include "factory_configurator_client.h"
 #include "mbed-client/m2mconstants.h"
 #include "mbed-trace/mbed_trace.h"
+#include "pal.h"
 #ifndef MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
 #include "CertificateEnrollmentClient.h"
 #endif // MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
+
+#if MBED_CLOUD_CLIENT_STL_API
+#include <string>
+#endif
+
 #include <assert.h>
 
 #define TRACE_GROUP "mClt"
@@ -112,7 +117,7 @@ void ServiceClient::initialize_and_register(M2MBaseList& reg_objs)
                version is present in the KCM.
             */
             tr_debug("ServiceClient::initialize_and_register: update version defined");
-;
+
             const size_t buffer_size = 16;
             uint8_t buffer[buffer_size];
             size_t size = 0;
@@ -137,41 +142,50 @@ void ServiceClient::initialize_and_register(M2MBaseList& reg_objs)
 
             /* Initialize Update Client */
             FP1<void, int32_t> callback(this, &ServiceClient::update_error_callback);
-            UpdateClient::UpdateClient(callback, _connector_client.m2m_interface());
+            UpdateClient::UpdateClient(callback, _connector_client.m2m_interface(), this);
         }
+        // else branch is required for re-initialization.
+        else {
+            finish_initialization();
+        }
+#else /* MBED_CLOUD_CLIENT_SUPPORT_UPDATE */
+        finish_initialization();
 #endif /* MBED_CLOUD_CLIENT_SUPPORT_UPDATE */
-
-        /* Device Object is mandatory.
-           Get instance and add it to object list
-        */
-        M2MDevice *device_object = device_object_from_storage();
-		
-#ifndef MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
-        // Initialize the certificate enrollment resources and module
-        if (CertificateEnrollmentClient::init(*_client_objs, &_connector_client.est_client()) != CE_STATUS_SUCCESS) {
-            // FIXME: Fail the setup
-        }
-#endif  MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
-
-        if (device_object) {
-            /* Publish device object resource to mds */
-            M2MResourceList list = device_object->object_instance()->resources();
-            if(!list.empty()) {
-                M2MResourceList::const_iterator it;
-                it = list.begin();
-                for ( ; it != list.end(); it++ ) {
-                    (*it)->set_register_uri(true);
-                }
-            }
-
-            /* Add Device Object to object list. */
-            _client_objs->push_back(device_object);
-        }
-
-        internal_event(State_Bootstrap);
     } else if (_current_state == State_Success) {
         state_success();
     }
+}
+
+void ServiceClient::finish_initialization(void)
+{
+    /* Device Object is mandatory.
+       Get instance and add it to object list
+    */
+    M2MDevice *device_object = device_object_from_storage();
+
+#ifndef MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
+        // Initialize the certificate enrollment resources and module
+        if (CertificateEnrollmentClient::init(*_client_objs, &_connector_client.est_client()) != CE_STATUS_SUCCESS) {
+            _service_callback.error((int)CE_STATUS_INIT_FAILED, "Certificate Enrollment initialization failed");
+        }
+#endif /* !MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT */
+
+    if (device_object) {
+        /* Publish device object resource to mds */
+        M2MResourceList list = device_object->object_instance()->resources();
+        if(!list.empty()) {
+            M2MResourceList::const_iterator it;
+            it = list.begin();
+            for ( ; it != list.end(); it++ ) {
+                (*it)->set_register_uri(true);
+            }
+        }
+
+        /* Add Device Object to object list. */
+        _client_objs->push_back(device_object);
+    }
+
+    internal_event(State_Bootstrap);
 }
 
 ConnectorClient &ServiceClient::connector_client()
@@ -245,7 +259,16 @@ void ServiceClient::state_bootstrap()
     bool bootstrap = _connector_client.use_bootstrap();
     tr_info("ServiceClient::state_bootstrap() - lwm2m credentials available: %d", credentials_ready);
     tr_info("ServiceClient::state_bootstrap() - use bootstrap: %d", bootstrap);
-    if (credentials_ready || !bootstrap) {
+
+    bool get_time = false;
+#if defined (PAL_USE_SECURE_TIME) && (PAL_USE_SECURE_TIME == 1)
+    // Strong time is mandatory in bootstrap mode
+    get_time = pal_osGetTime() == 0 ? true : false;
+#endif
+    // Fallback to rebootstrap if time fetch fails in PAL_USE_SECURE_TIME case
+    if (credentials_ready && bootstrap && get_time) {
+        _connector_client.bootstrap_again();
+    } else if (credentials_ready || !bootstrap) {
         internal_event(State_Register);
     } else {
         _connector_client.start_bootstrap();
@@ -486,6 +509,7 @@ M2MDevice* ServiceClient::device_object_from_storage()
  * \param value String object.
  * \return True if successful, false otherwise.
  */
+#if MBED_CLOUD_CLIENT_STL_API
 bool ServiceClient::set_device_resource_value(M2MDevice::DeviceResource resource,
                                               const std::string& value)
 {
@@ -493,6 +517,7 @@ bool ServiceClient::set_device_resource_value(M2MDevice::DeviceResource resource
                                      value.c_str(),
                                      value.size());
 }
+#endif
 
 /**
  * \brief Set resource value in the Device Object

@@ -144,7 +144,9 @@ static uint64_t s_palUSR1Counter =0;
 static void sigusr2(int signo) {
     (void)signo;
     s_palUSR1Counter++;
-    pal_osSemaphoreRelease(s_socketCallbackSignalSemaphore);
+    // Coverity fix - Unchecked return value. There is not much doable if semaphore release fail.
+    // Function pal_osSemaphoreRelease already contains error trace.
+    (void)pal_osSemaphoreRelease(s_socketCallbackSignalSemaphore);
 }
 
 static uint64_t s_palIOCounter =0;
@@ -153,7 +155,9 @@ static void sig_io_handler(int signo) {
     (void)signo;
 
     s_palIOCounter++;
-    pal_osSemaphoreRelease(s_socketCallbackSignalSemaphore);
+    // Coverity fix - Unchecked return value. There is not much doable if semaphore release fail.
+    // Function pal_osSemaphoreRelease already contains error trace.
+    (void)pal_osSemaphoreRelease(s_socketCallbackSignalSemaphore);
 }
 
 
@@ -534,7 +538,7 @@ palStatus_t pal_plat_registerNetworkInterface(void* context, uint32_t* interface
 
     for (index = 0; index < s_palNumOfInterfaces; index++) // if specific context already registered return existing index instead of registering again.
     {
-        if (memcmp(s_palNetworkInterfacesSupported[index].interfaceName, (const char *)context, strlen(s_palNetworkInterfacesSupported[index].interfaceName)) == 0)
+        if (strcmp(s_palNetworkInterfacesSupported[index].interfaceName, (const char *)context) == 0)
         {
             found = true;
             *interfaceIndex = index;
@@ -557,6 +561,13 @@ palStatus_t pal_plat_registerNetworkInterface(void* context, uint32_t* interface
     }
 
     return result;
+}
+
+palStatus_t pal_plat_unregisterNetworkInterface(uint32_t interfaceIndex)
+{
+    strcpy(s_palNetworkInterfacesSupported[interfaceIndex].interfaceName, "");
+    --s_palNumOfInterfaces;
+    return PAL_SUCCESS;
 }
 
 palStatus_t pal_plat_socketsTerminate(void* context)
@@ -586,7 +597,7 @@ palStatus_t pal_plat_socketsTerminate(void* context)
     {
         pthread_kill(s_pollThread, SIGUSR1);
     }
-    
+
     result = pal_osMutexRelease(s_mutexSocketCallbacks);
     if ((PAL_SUCCESS != result) && (PAL_SUCCESS == firstError))
     {
@@ -941,7 +952,8 @@ palStatus_t pal_plat_getNetInterfaceInfo(uint32_t interfaceNum, palNetInterfaceI
     //interface not found error
     if (found != 1 && result == PAL_SUCCESS)
     {
-        PAL_LOG_ERR("Network failed reading interface info");
+        PAL_LOG_ERR("Cannot find network interface \"%s\"",
+            s_palNetworkInterfacesSupported[interfaceNum].interfaceName);
         result = PAL_ERR_GENERIC_FAILURE;
     }
 
@@ -1155,7 +1167,19 @@ palStatus_t pal_plat_getAddressInfo(const char *url, palSocketAddress_t *address
     res = getaddrinfo(url, NULL, &hints, &pAddrInf);
     if(res < 0)
     {
-        result = translateErrorToPALError(errno);
+        // getaddrinfo returns EAI-error. In case of EAI_SYSTEM, the error
+        // is 'Other system error, check errno for details'
+        // (http://man7.org/linux/man-pages/man3/getaddrinfo.3.html#RETURN_VALUE)
+        if (res == EAI_SYSTEM)
+        {
+            result = translateErrorToPALError(errno);
+        }
+        else
+        {
+            // errno values are positive, getaddrinfo errors are negative so they can be mapped
+            // in the same place.
+            result = translateErrorToPALError(res);
+        }
     }
     else
     {

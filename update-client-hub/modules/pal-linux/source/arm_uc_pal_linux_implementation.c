@@ -19,14 +19,14 @@
 #include "arm_uc_config.h"
 #if defined(ARM_UC_FEATURE_PAL_LINUX) && (ARM_UC_FEATURE_PAL_LINUX == 1)
 #if defined(TARGET_IS_PC_LINUX)
+#define _FILE_OFFSET_BITS  64
 
 #include "update-client-pal-linux/arm_uc_pal_linux_implementation_internal.h"
 #include "update-client-pal-linux/arm_uc_pal_linux_implementation.h"
 #include "update-client-paal/arm_uc_paal_update_api.h"
+#include "update-client-pal-linux/arm_uc_pal_linux_ext.h"
 
-#include "update-client-common/arm_uc_trace.h"
-#include "update-client-common/arm_uc_utilities.h"
-#include "update-client-common/arm_uc_metadata_header_v2.h"
+#include "update-client-metadata-header/arm_uc_metadata_header_v2.h"
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
@@ -198,8 +198,19 @@ arm_uc_error_t ARM_UC_PAL_Linux_Prepare(uint32_t location,
                     buffer->size = buffer->size_max;
 
                     uint64_t index = 0;
-                    while (index < details->size) {
-                        /* calculate write size to handle overspill */
+/*
+ * writing of full file is not enabled by default now. Few drawbacks of writing before download:
+ * -kernel watchdog issue due some file IO problem with a huge write (around 4GB)
+ * -wear of the MCC device for unnecessary physical writes (there is max number of writes that can be done before physical cells of memory break)
+ * -increased time of update process. specially with huge files this will be many minutes of extra time spend to MCC write.
+*/
+#ifdef WRITE_FULL_PHYSICAL_FILE
+                    uint64_t writeSize = details->size;
+#else
+                    uint64_t writeSize = 1;
+#endif
+                    while (index < writeSize) {
+                        // calculate write size to handle overspill
                         size_t actual_size = details->size - index;
 
                         if (actual_size > buffer->size) {
@@ -216,7 +227,7 @@ arm_uc_error_t ARM_UC_PAL_Linux_Prepare(uint32_t location,
                         if (xfer_size == actual_size) {
                             index += actual_size;
                         } else {
-                            result.code = ERR_INVALID_PARAMETER;
+                            result.code = PAAL_ERR_FIRMWARE_TOO_LARGE;
                             break;
                         }
                     }
@@ -316,9 +327,9 @@ arm_uc_error_t ARM_UC_PAL_Linux_Write(uint32_t location,
         /* continue if file is open */
         if (arm_uc_firmware_descriptor != NULL) {
             /* set write position */
-            int status = fseek(arm_uc_firmware_descriptor,
-                               offset,
-                               SEEK_SET);
+            int status = fseeko(arm_uc_firmware_descriptor,
+                                offset,
+                                SEEK_SET);
 
             /* continue if position is set */
             if (status == 0) {
@@ -656,6 +667,18 @@ arm_uc_error_t ARM_UC_PAL_Linux_GetInstallerDetails(arm_uc_installer_details_t *
     }
 
     return result;
+}
+
+/**
+ * @brief Write a manifest to a file.
+ * @param location Storage location ID.
+ * @param buffer Buffer that contains the manifest.
+ * @return Returns ERR_NONE if the manifest was written.
+ *         Returns ERR_INVALID_PARAMETER on error.
+ */
+arm_uc_error_t ARM_UC_PAL_Linux_WriteManifest(uint32_t location, const arm_uc_buffer_t *buffer)
+{
+    return arm_uc_pal_linux_internal_write_manifest(&location, buffer);
 }
 
 #endif /* TARGET_IS_PC_LINUX */

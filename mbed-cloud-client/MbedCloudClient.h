@@ -20,16 +20,33 @@
 #ifndef __MBED_CLOUD_CLIENT_H__
 #define __MBED_CLOUD_CLIENT_H__
 
+#include "include/ServiceClient.h"
+#include "mbed-cloud-client/MbedCloudClientConfig.h"
+
+#ifndef MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
+// This overly long path is needed to have build compatibility with previous
+// version. A #include can't just point to a file which is not in application's
+// include path and we should not force application to add every internal directory
+// of MCC to their paths.
+// On next phase, the cmake is used to publish the API paths via
+// target_include_directories(), but that requires a bit more cleanups.
+#include "certificate-enrollment-client/certificate-enrollment-client/ce_defs.h"
+#endif // MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
+
+#if MBED_CLOUD_CLIENT_STL_API
 #include <map>
 #include <string>
 #include <vector>
-#include "include/ServiceClient.h"
-#include "mbed-cloud-client/MbedCloudClientConfig.h"
-#ifndef MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
-#include "CertificateEnrollmentClient.h"
-#endif // MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
+#endif
 
+#if MBED_CLOUD_CLIENT_STD_NAMESPACE_POLLUTION
+// We should not really pollute application's namespace with std:: by having this in
+// a public header file.
+// But as as removal of the next line may break existing applications, which build due to this
+// leakage, we need to maintain the old behavior for a while and just allow one to remove it.
 using namespace std;
+#endif
+
 class SimpleM2MResourceBase;
 
 /**
@@ -55,7 +72,7 @@ public:
 
 /*! \file MbedCloudClient.h
  *  \brief MbedCloudClient.
- *  This class provides an interface for handling all the mbed Cloud Client Interface operations
+ *  This class provides an interface for handling all the client interface operations
  *  including device provisioning, identity setup, device resource management defined in the OMA
  *  LWM2M specifications, and update firmware.
  *  Device resource management includes Bootstrapping, Client Registration, Device Management &
@@ -71,41 +88,44 @@ public:
      * that can occur during various client operations.
      */
     typedef enum {
-        ConnectErrorNone                        = 0x0, // Range reserved for Connector Error from 0x30 - 0x3FF
-        ConnectAlreadyExists,
-        ConnectBootstrapFailed,
-        ConnectInvalidParameters,
-        ConnectNotRegistered,
-        ConnectTimeout,
-        ConnectNetworkError,
-        ConnectResponseParseFailed,
-        ConnectUnknownError,
-        ConnectMemoryConnectFail,
-        ConnectNotAllowed,
-        ConnectSecureConnectionFailed,
-        ConnectDnsResolvingFailed,
-        ConnectorFailedToStoreCredentials,
-        ConnectorFailedToReadCredentials,
+        ConnectErrorNone                        = M2MInterface::ErrorNone, // Range reserved for Connector Error from 0x30 - 0x3FF
+        ConnectAlreadyExists                    = M2MInterface::AlreadyExists,
+        ConnectBootstrapFailed                  = M2MInterface::BootstrapFailed,
+        ConnectInvalidParameters                = M2MInterface::InvalidParameters,
+        ConnectNotRegistered                    = M2MInterface::NotRegistered,
+        ConnectTimeout                          = M2MInterface::Timeout,
+        ConnectNetworkError                     = M2MInterface::NetworkError,
+        ConnectResponseParseFailed              = M2MInterface::ResponseParseFailed,
+        ConnectUnknownError                     = M2MInterface::UnknownError,
+        ConnectMemoryConnectFail                = M2MInterface::MemoryFail,
+        ConnectNotAllowed                       = M2MInterface::NotAllowed,
+        ConnectSecureConnectionFailed           = M2MInterface::SecureConnectionFailed,
+        ConnectDnsResolvingFailed               = M2MInterface::DnsResolvingFailed,
+        ConnectorFailedToStoreCredentials       = M2MInterface::FailedToStoreCredentials,
+        ConnectorFailedToReadCredentials        = M2MInterface::FailedToReadCredentials,
         ConnectorInvalidCredentials,
 #ifdef MBED_CLOUD_CLIENT_SUPPORT_UPDATE
         UpdateWarningNoActionRequired           = UpdateClient::WarningBase, // Range reserved for Update Error from 0x0400 - 0x04FF
         UpdateWarningCertificateNotFound        = UpdateClient::WarningCertificateNotFound,
         UpdateWarningIdentityNotFound           = UpdateClient::WarningIdentityNotFound,
-        UpdateWarningCertificateInvalid         = UpdateClient::WarningCertificateInvalid,
-        UpdateWarningSignatureInvalid           = UpdateClient::WarningSignatureInvalid,
         UpdateWarningVendorMismatch             = UpdateClient::WarningVendorMismatch,
         UpdateWarningClassMismatch              = UpdateClient::WarningClassMismatch,
         UpdateWarningDeviceMismatch             = UpdateClient::WarningDeviceMismatch,
+        UpdateWarningCertificateInvalid         = UpdateClient::WarningCertificateInvalid,
+        UpdateWarningSignatureInvalid           = UpdateClient::WarningSignatureInvalid,
+        UpdateWarningBadKeytable                = UpdateClient::WarningBadKeytable,
         UpdateWarningURINotFound                = UpdateClient::WarningURINotFound,
         UpdateWarningRollbackProtection         = UpdateClient::WarningRollbackProtection,
         UpdateWarningUnknown                    = UpdateClient::WarningUnknown,
+        UpdateCertificateInsertion              = UpdateClient::WarningCertificateInsertion,
         UpdateErrorUserActionRequired           = UpdateClient::ErrorBase,
         UpdateErrorWriteToStorage               = UpdateClient::ErrorWriteToStorage,
         UpdateErrorInvalidHash                  = UpdateClient::ErrorInvalidHash,
+        UpdateErrorConnection                   = UpdateClient::ErrorConnection,
         UpdateFatalRebootRequired,
 #endif
 #ifndef MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
-        // Certificate Enrollment error 0x0500 - 0x05ff. Defined in ce_status.h 
+        // Certificate Enrollment error 0x0500 - 0x05ff. Defined in ce_status.h
         EnrollmentErrorBase = CE_STATUS_RANGE_BASE,
         EnrollmentErrorEnd = CE_STATUS_RANGE_END
 #endif // MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
@@ -300,15 +320,20 @@ public:
      */
     void set_entropy_callback(entropy_cb callback);
 
+#if MBED_CLOUD_CLIENT_STL_API
     /**
      * \brief Set resource value in the Device Object
+     *
+     * \note This API and functionality using STL is being phased out, as it is wasting resources by
+     * duplicating data and harming portability by requiring a STL implementation to exist.
      *
      * \param resource Device enum to have value set.
      * \param value String object.
      * \return True if successful, false otherwise.
      */
     bool set_device_resource_value(M2MDevice::DeviceResource resource,
-                                   const std::string &value);
+                                   const std::string &value) m2m_deprecated;
+#endif
 
 #ifdef MBED_CLOUD_CLIENT_SUPPORT_UPDATE
     /**
@@ -362,30 +387,43 @@ public:
     * \return CE_STATUS_SUCCESS if the asynchronous operation has started successfully. In this case, user callback will be executed at the end of the operation, indicating completion status.
     *         If any other ce_status_e:: status is returned - operation encountered some error prior to the start of the asynchronous stage and user callback will NOT be executed.
     */
-    ce_status_e certificate_renew(const char *cert_name)
-    {
-        return CertificateEnrollmentClient::certificate_renew(cert_name);
-    }
+    ce_status_e certificate_renew(const char *cert_name);
 
     /**
     * \brief Sets the callback function that is called when the certificate renewal process has completed.
     * Must be called before any certificate renewal operation.
     * \param user_cb A function pointer to the user callback. If `user_cb` is NULL - no callback is called when the process has completed.
     */
-    void on_certificate_renewal(cert_renewal_cb_f user_cb)
-    {
-        CertificateEnrollmentClient::on_certificate_renewal(user_cb);
-    }
+    void on_certificate_renewal(cert_renewal_cb_f user_cb);
 #endif // MBED_CONF_MBED_CLOUD_CLIENT_DISABLE_CERTIFICATE_ENROLLMENT
 
 #ifdef MBED_CLOUD_CLIENT_EDGE_EXTENSION
     /**
      * @brief Returns the pointer to the inner object list.
-     * The list is not allowed to be modified and is owned by the Mbed Cloud Client instance.
+     * The list is not allowed to be modified and is owned by the client instance.
      * @return The inner object list pointer.
      */
     const M2MBaseList *get_object_list() const;
 #endif // MBED_CLOUD_CLIENT_EDGE_EXTENSION
+
+    /**
+     * \brief Pauses client's timed functionality and closes network connection
+     * to the Cloud. After successful call the operation is continued
+     * by calling resume().
+     *
+     * \note This operation does not unregister client from the Cloud.
+     * Closes the socket and removes interface from the interface list.
+     */
+    void pause();
+
+    /**
+     * \brief Resumes client's timed functionality and network connection
+     * to the Cloud. Updates registration. Can be only called after
+     * a successful call to pause().
+     *
+     * \param iface A handler to the network interface.
+     */
+    void resume(void *iface);
 
 protected: // from ServiceClientCallback
 
@@ -420,24 +458,31 @@ private:
     * \param route The URI path of the registered resource such as "/Test/0/res/".
     * \param resource Object of the SimpleM2MResourceBase.
     */
-    void register_update_callback(string route, SimpleM2MResourceBase* resource);
+#if MBED_CLOUD_CLIENT_STL_API
+    void register_update_callback(string route, SimpleM2MResourceBase* resource) m2m_deprecated;
+#endif
 
 private:
 
     ServiceClient                                   _client;
     MbedCloudClientCallback                         *_value_callback;
-    map<string, M2MObject*>                         _objects;
-    map<string, M2MResource*>                       _resources;
     M2MBaseList                                     _object_list;
-    map<string, SimpleM2MResourceBase*>             _update_values;
     FP0<void>                                       _on_registered;
     FP0<void>                                       _on_unregistered;
     FP0<void>                                       _on_registration_updated;
     FP1<void,int>                                   _on_error;
     const char                                      *_error_description;
 
+#if MBED_CLOUD_CLIENT_STL_API
+    // This API and functionality is being phased out, as it is wasting resources by
+    // duplicating data and harming portability by requiring a STL implementation to exist.
+    map<string, M2MObject*>                         _objects;
+    map<string, M2MResource*>                       _resources;
+    map<string, SimpleM2MResourceBase*>             _update_values;
 
 friend class SimpleM2MResourceBase;
+
+#endif // MBED_CLOUD_CLIENT_STL_API
 };
 
 template<typename T>

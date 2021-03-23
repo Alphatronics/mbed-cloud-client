@@ -19,12 +19,11 @@
 #include "arm_uc_config.h"
 #if defined(ARM_UC_FEATURE_PAL_LINUX) && (ARM_UC_FEATURE_PAL_LINUX == 1)
 #if defined(TARGET_IS_PC_LINUX)
+#define _FILE_OFFSET_BITS  64
 
 #include "update-client-pal-linux/arm_uc_pal_linux_implementation_internal.h"
 
-#include "update-client-common/arm_uc_trace.h"
-#include "update-client-common/arm_uc_utilities.h"
-#include "update-client-common/arm_uc_metadata_header_v2.h"
+#include "update-client-metadata-header/arm_uc_metadata_header_v2.h"
 #include "update-client-common/arm_uc_scheduler.h"
 
 #define __STDC_FORMAT_MACROS
@@ -276,7 +275,7 @@ arm_uc_error_t arm_uc_pal_linux_internal_read(const char *file_path,
         /* continue if file is open */
         if (descriptor != NULL) {
             /* set read position */
-            int status = fseek(descriptor, offset, SEEK_SET);
+            int status = fseeko(descriptor, offset, SEEK_SET);
 
             /* continue if position is set */
             if (status == 0) {
@@ -365,14 +364,22 @@ arm_uc_error_t arm_uc_pal_linux_internal_read_header(uint32_t *location,
                            (buffer.size == ARM_UC_EXTERNAL_HEADER_SIZE_V2)) {
                     result = arm_uc_parse_external_header_v2(read_buffer, details);
                 } else {
-                    UC_PAAL_ERR_MSG("invalid header in slot %" PRIu32, *location);
+                    if (location) {
+                        UC_PAAL_ERR_MSG("invalid header in slot %" PRIu32, *location);
+                    } else {
+                        UC_PAAL_ERR_MSG("invalid header location");
+                    }
 
                     /* invalid header format */
                     result.code = ERR_INVALID_PARAMETER;
                 }
             } else {
                 /* unsuccessful read */
-                UC_PAAL_ERR_MSG("unable to read header in slot %" PRIX32, *location);
+                if (location) {
+                    UC_PAAL_ERR_MSG("unable to read header in slot %" PRIX32, *location);
+                } else {
+                    UC_PAAL_ERR_MSG("unable to read from unspecified header location");
+                }
             }
         } else {
             UC_PAAL_ERR_MSG("header file name and path too long");
@@ -507,6 +514,59 @@ arm_uc_error_t arm_uc_pal_linux_internal_write_header(uint32_t *location,
             UC_PAAL_ERR_MSG("header too large for buffer");
         }
 
+    }
+
+    return result;
+}
+
+arm_uc_error_t arm_uc_pal_linux_internal_write_manifest(uint32_t *location,
+                                                        const arm_uc_buffer_t *manifest)
+{
+    arm_uc_error_t result = { .code = ERR_INVALID_PARAMETER };
+
+    if (manifest) {
+        /* write header file */
+        char file_path[ARM_UC_MAXIMUM_FILE_AND_PATH_LENGTH] = { 0 };
+
+        /* construct header file path */
+        result = arm_uc_pal_linux_internal_file_path(file_path,
+                                                        ARM_UC_MAXIMUM_FILE_AND_PATH_LENGTH,
+                                                        ARM_UC_HEADER_FOLDER_PATH,
+                                                        "manifest",
+                                                        location);
+
+        if (result.error == ERR_NONE) {
+            /* inverse result */
+            result.code = ERR_INVALID_PARAMETER;
+
+            /* open file and get file handler */
+            errno = 0;
+            FILE *file = fopen(file_path, "wb");
+
+            if (file != NULL) {
+                /* write manifest to file */
+                size_t xfer_size = fwrite(manifest->ptr,
+                                          sizeof(uint8_t),
+                                          manifest->size,
+                                          file);
+
+                UC_PAAL_TRACE("written: %" PRIu64, xfer_size);
+
+                /* close file after write */
+                int status = fclose(file);
+
+                if ((xfer_size == manifest->size) && (status != EOF)) {
+                    /* set return code if write was successful */
+                    result.code = ERR_NONE;
+                } else {
+                    UC_PAAL_ERR_MSG("failed to write manifest");
+                }
+            } else {
+                UC_PAAL_ERR_MSG("file open failed: %s", strerror(errno));
+            }
+        } else {
+            UC_PAAL_ERR_MSG("manifest file name and path too long");
+        }
     }
 
     return result;

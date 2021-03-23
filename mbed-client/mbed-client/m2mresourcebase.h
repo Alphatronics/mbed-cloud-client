@@ -20,8 +20,8 @@
 #include "mbed-client/functionpointer.h"
 
 
-/*! \file m2mresourceinstance.h
- *  \brief M2MResourceInstance.
+/*! \file m2mresourcebase.h
+ *  \brief M2MResourceBase.
  *  This class is the base class for mbed Client Resources. All defined
  *  LWM2M resource models can be created based on it.
  */
@@ -394,7 +394,8 @@ public:
      * @brief Sets the function that is executed when this
      * object receives a GET request.
      * This is called if resource values are stored on the application side.
-     * NOTE! Due to a limitation in the mbed-client-c library, a GET request can only contain data size up to 65KB.
+     * @note Due to a limitation in the mbed-client-c library, the whole
+     * payload up to 64 KiB must be supplied in the single callback.
      * @param callback The function pointer that is called.
      */
     bool set_outgoing_block_message_callback(outgoing_block_message_callback callback);

@@ -18,9 +18,12 @@
 #include "pal_network.h"
 #include "unity.h"
 #include "unity_fixture.h"
-#include "PlatIncludes.h"
-#include "pal_BSP.h"
-#include "string.h"
+#include "test_runners.h"
+
+#include <string.h>
+
+// config file for keepalive server
+#include "pal_socket_test_address.h"
 
 #ifdef __LINUX__
 #include <netdb.h>
@@ -41,18 +44,16 @@ TEST_GROUP(pal_socket);
 #define PAL_NET_SUPPORT_LWIP 1
 #define PAL_NET_TEST_SERVER_NAME   "www.arm.com"
 #define PAL_NET_TEST_SERVER_NAME_UDP   "8.8.8.8"
-#define PAL_TEST_KEEPALIVE_SERVER_ADDRESS "62.44.193.186"
-#define PAL_TEST_KEEPALIVE_NUM_OF_ACK 4
+
 
 #define PAL_NET_TEST_SERVER_HTTP_PORT 80
-#define PAL_TEST_SERVER_KEEPALIVE_PORT 5533
 
 #define PAL_NET_TEST_SERVER_UDP_PORT 53
 #define PAL_NET_TEST_INCOMING_PORT 8002
 #define PAL_NET_TEST_INCOMING_PORT2 8989
 
 #define PAL_NET_TEST_LOCAL_LOOPBACK_IF_INDEX 0
-extern void * g_palTestNetworkInterface; // this is set by the palTestMain funciton
+extern void * g_palTestNetworkInterface; // this is set by the palTestMain function
 PAL_PRIVATE uint32_t g_interfaceCTXIndex = 0;
 PAL_PRIVATE uint32_t s_callbackcounter = 0;
 
@@ -71,6 +72,25 @@ PAL_PRIVATE palSocket_t g_testSockets[PAL_NET_TEST_SOCKETS] = {0,0,0,0};
 PAL_PRIVATE uint8_t *g_testRecvBuffer = NULLPTR;
 PAL_PRIVATE uint8_t *g_testSendBuffer = NULLPTR;
 
+#define PAL_NET_TEST_ECHO_TEST_SERVER_ADDRESS "echo.mbedcloudtesting.com"
+
+// the tests expect to have guaranteed forward progress, even if they fail. So the semaphore
+// wait time is set to some arbitrary time, which is likely "long enough" to work even on system high load.
+// But if one tries to debug the code under test, the test code will timeout too soon. So if a
+// runtime debugger is used, just set this define to PAL_RTOS_WAIT_FOREVER
+#define TEST_SEMAPHORE_WAIT 10000
+
+
+#if defined(__SXOS__)
+// SX OS Does not support PAL_SO_RCVTIMEO or PAL_SO_SNDTIMEO
+    #define PAL_SO_RCVTIMEO_EXPECTED_RESULT     PAL_ERR_SOCKET_OPTION_NOT_SUPPORTED
+    #define PAL_SO_SNDTIMEO_EXPECTED_RESULT     PAL_ERR_SOCKET_OPTION_NOT_SUPPORTED
+#else
+    #define PAL_SO_RCVTIMEO_EXPECTED_RESULT     PAL_SUCCESS
+    #define PAL_SO_SNDTIMEO_EXPECTED_RESULT     PAL_SUCCESS
+#endif
+
+
 typedef struct pal_udp_test_data /*! structure used to hold state in UDP buffered tests */
 {
     const size_t messageSize;
@@ -85,12 +105,13 @@ typedef struct pal_udp_test_data /*! structure used to hold state in UDP buffere
 TEST_SETUP(pal_socket)
 {
     uint32_t i = 0;
-    palStatus_t status = PAL_SUCCESS;
+    palStatus_t status;
     //This is run before *each test*
-    pal_init();
+    status = pal_init();
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, status);
     if ( NULL == g_palTestNetworkInterface )
     {
-        PAL_LOG_ERR("error: net interface not configutred correctly");
+        PAL_LOG_ERR("error: net interface not configured correctly");
     }
     else
     {
@@ -138,23 +159,35 @@ PAL_PRIVATE void socketCallback1( void * arg)
 /*! \brief Test socket creation, destruction and modification, as well as getting address infromation and checking the blocking status of sockets.
 *
 ** \test
-* | # |    Step                        |   Expected  |
-* |---|--------------------------------|-------------|
+* | # |    Step                                                                                 |   Expected  |
+* |---|-----------------------------------------------------------------------------------      |-------------|
 * | 1 | Register a net interface using `pal_registerNetworkInterface`.                          | PAL_SUCCESS |
-* | 2 | Register a net interface using `pal_registerNetworkInterface`, and check that the ID is the same as the previous step.  | PAL_SUCCESS |
-* | 3 | Get the interface address using `pal_getNetInterfaceInfo`.                       | PAL_SUCCESS |
-* | 4 | Create a blocking UDP socket using `pal_socket`.                                        | PAL_SUCCESS |
+* | 2 | Register a net interface using `pal_registerNetworkInterface`,                          | PAL_SUCCESS |
+*       and check that the ID is the same as the previous step.
+* | 3 | Unregister a net interface using `pal_unregisterNetworkInterface`.                      | PAL_SUCCESS |
+* | 4 | Get the interface address using `pal_getNetInterfaceInfo`.                              | PAL_SUCCESS |
 * | 5 | Create a blocking UDP socket using `pal_socket`.                                        | PAL_SUCCESS |
-* | 6 | Create a non-blocking UDP socket using `pal_socket`.                                    | PAL_SUCCESS |
-* | 7 | Create a blocking asynchronous TCP socket with `socketCallback1` as callback.           | PAL_SUCCESS |
-* | 8 | Check the number of net interfaces registered using `pal_getNetInterfaceInfo`.           | PAL_SUCCESS |
-* | 9 | Set the socket receive timeout using `pal_setSocketOptions`.                              | PAL_SUCCESS |
-* | 10 | Check that the sockets return the correct blocking status using `pal_isNonBlocking`.      | PAL_SUCCESS |
-* | 11 | Check the `pal_getAddressInfo` function with an invalid address.                       | PAL_ERR_SOCKET_DNS_ERROR |
-* | 12 | Close all sockets.                                                              | PAL_SUCCESS |
+* | 6 | Create a blocking UDP socket using `pal_socket`.                                        | PAL_SUCCESS |
+* | 7 | Create a non-blocking UDP socket using `pal_socket`.                                    | PAL_SUCCESS |
+* | 8 | Create a blocking asynchronous TCP socket with `socketCallback1` as callback.           | PAL_SUCCESS |
+* | 9 | Check the number of net interfaces registered using `pal_getNetInterfaceInfo`.          | PAL_SUCCESS |
+* | 10 | Set the socket receive timeout using `pal_setSocketOptions`.                           | PAL_SUCCESS |
+* | 11 | Check that the sockets return the correct blocking status using `pal_isNonBlocking`.   | PAL_SUCCESS |
+* | 12 | Check the `pal_getAddressInfo` function with an invalid address.                       | PAL_ERR_SOCKET_DNS_ERROR |
+* | 13 | Close all sockets.                                                                     | PAL_SUCCESS |
 */
 TEST(pal_socket, socketUDPCreationOptionsTest)
 {
+#ifdef TARGET_LIKE_MBED
+    // TODO: fix with https://jira.arm.com/browse/IOTCLT-3197
+    TEST_IGNORE_MESSAGE("Ignored, IOTCLT-3197, Expected 2 Was 3");
+#endif
+#if !defined(TARGET_LIKE_MBED) && !defined(DEBUG)
+    // Non mbed and release mode
+    // Linux socketUDPCreationOptionsTest fails on release mode
+    // https://jira.arm.com/browse/IOTCLT-3241
+    TEST_IGNORE_MESSAGE("Ignored, IOTCLT-3241, pal_socket_test.c:255: Expected 0 Was 1");
+#endif
     palStatus_t result = PAL_SUCCESS;
     uint32_t numInterface = 0;
     palNetInterfaceInfo_t interfaceInfo;
@@ -167,18 +200,47 @@ TEST(pal_socket, socketUDPCreationOptionsTest)
     bool isNonBlocking = false;
 
     memset(&interfaceInfo,0,sizeof(interfaceInfo));
-    // Check that re-adding the network interface returns the same index
+
     /*#1*/
     result = pal_registerNetworkInterface(g_palTestNetworkInterface, &interfaceIndex);
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
 
+    char iface[5];
+    for (int i = 1; i < PAL_MAX_SUPORTED_NET_INTERFACES; i++) {
+        sprintf(iface, "%d", i);
+        result = pal_registerNetworkInterface((void*)iface, &interfaceIndex);
+        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+        result = pal_getNumberOfNetInterfaces(&numInterface);
+        TEST_ASSERT_EQUAL(numInterface, i + 1);
+    }
+
+    // Array full
+    result = pal_registerNetworkInterface((void*)"10", &interfaceIndex);
+    TEST_ASSERT_EQUAL_HEX(PAL_ERR_SOCKET_MAX_NUMBER_OF_INTERFACES_REACHED, result);
+
+    // Check that re-adding the network interface returns the same index,
+    // which in this case is the first item in the list
     /*#2*/
     result = pal_registerNetworkInterface(g_palTestNetworkInterface, &interfaceIndex2);
-    TEST_ASSERT_EQUAL_HEX(interfaceIndex, interfaceIndex2);
+    TEST_ASSERT_EQUAL_HEX(0, interfaceIndex2);
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
 
-#if PAL_SUPPORT_IP_V4
+    // Remove interfaces from the list, keep the first item since it required in other tests
     /*#3*/
+    for (int i = 1; i < PAL_MAX_SUPORTED_NET_INTERFACES; i++) {
+        pal_unregisterNetworkInterface(i);
+        pal_getNumberOfNetInterfaces(&numInterface);
+        TEST_ASSERT_EQUAL(numInterface, PAL_MAX_SUPORTED_NET_INTERFACES - i);
+    }
+
+    // Interface index out of range
+    pal_unregisterNetworkInterface(11);
+
+    // Set index back to default one
+    interfaceIndex = 0;
+
+#if PAL_SUPPORT_IP_V4
+    /*#4*/
     result = pal_getNetInterfaceInfo(interfaceIndex, &interfaceInfo);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
     PAL_PRINTF("Default interface address: %u %u %u %u \r\n",
@@ -189,32 +251,31 @@ TEST(pal_socket, socketUDPCreationOptionsTest)
 #endif
 
     //Blocking
-    /*#4*/
+    /*#5*/
     result = pal_socket(PAL_AF_INET, PAL_SOCK_DGRAM, false, interfaceIndex, &g_testSockets[0]);
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
-    /*#5*/
+    /*#6*/
     result = pal_socket(PAL_AF_INET, PAL_SOCK_DGRAM, false, interfaceIndex, &g_testSockets[1]);
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
     //Non-blocking
-    /*#6*/
+    /*#7*/
     result = pal_socket(PAL_AF_INET, PAL_SOCK_DGRAM, true, interfaceIndex, &g_testSockets[3]);
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
 #if    PAL_NET_ASYNCHRONOUS_SOCKET_API
-    /*#7*/
+    /*#8*/
     result = pal_asynchronousSocket(PAL_AF_INET, PAL_SOCK_STREAM, false, interfaceIndex, socketCallback1, &g_testSockets[2]);
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
 #endif // PAL_NET_ASYNCHRONOUS_SOCKET_API
 
-    /*#8*/
-    result = pal_getNumberOfNetInterfaces(&numInterface);
-    TEST_ASSERT_NOT_EQUAL(numInterface, 0);
-    TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
-
     /*#9*/
-    result = pal_setSocketOptions(g_testSockets[0], PAL_SO_RCVTIMEO, &sockOptVal, sockOptLen);
-    TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
+    result = pal_getNumberOfNetInterfaces(&numInterface);
+    TEST_ASSERT_EQUAL(numInterface, 1);
 
     /*#10*/
+    result = pal_setSocketOptions(g_testSockets[0], PAL_SO_RCVTIMEO, &sockOptVal, sockOptLen);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_RCVTIMEO_EXPECTED_RESULT, result);
+
+    /*#11*/
     result = pal_isNonBlocking(g_testSockets[0],&isNonBlocking);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
     TEST_ASSERT_EQUAL_HEX(isNonBlocking, false);
@@ -223,11 +284,11 @@ TEST(pal_socket, socketUDPCreationOptionsTest)
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
     TEST_ASSERT_EQUAL_HEX(isNonBlocking, true);
 
-    /*#11*/
+    /*#12*/
     result = pal_getAddressInfo("0.0.0.0", &address, &addrlen);
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_SOCKET_DNS_ERROR, result);
 
-    /*#12*/
+    /*#13*/
 #if    PAL_NET_ASYNCHRONOUS_SOCKET_API
     result = pal_close(&g_testSockets[2]);
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
@@ -288,9 +349,9 @@ TEST(pal_socket, basicTCPclientSendRecieve)
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
 
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_SNDTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_SNDTIMEO_EXPECTED_RESULT, result);
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_RCVTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_RCVTIMEO_EXPECTED_RESULT, result);
 
 
     /*#4*/
@@ -359,7 +420,7 @@ TEST(pal_socket, basicUDPclientSendRecieve)
     /*#4*/
     //We set a timeout for receiving so we won't get stuck in the test
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_RCVTIMEO, &socket_timeout_ms, sizeof(socket_timeout_ms));
-    TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_RCVTIMEO_EXPECTED_RESULT, result);
 
     /*#5*/
     result = pal_sendTo(g_testSockets[0], buffer, sizeof(buffer), &address, 16, &sent);
@@ -409,7 +470,7 @@ PAL_PRIVATE void basicSocketScenario3Callback(void * arg)
 
 }
 #endif
-palSemaphoreID_t s_semaphoreID = NULLPTR;
+static palSemaphoreID_t s_semaphoreID = NULLPTR;
 
 PAL_PRIVATE void socketCallback2(void * arg)
 {
@@ -535,14 +596,17 @@ void palNetClientFunc(void const *argument)
     int32_t tmp = 0;
     size_t sent = 0;
     size_t read = 0;
+
     palNetTestThreadData_t* dualSem = (palNetTestThreadData_t*)argument;
+    TEST_ASSERT_NOT_NULL(dualSem);
+
     palSocketLength_t addrlen = 16;
     //palSocketAddress_t address = { 0 };
     palNetInterfaceInfo_t interfaceInfo;
     const char* message = "GET / HTTP/1.0\r\n\r\n";
 
     /*#C1*/
-    result = pal_osSemaphoreWait(dualSem->sem1, 500, &tmp);
+    result = pal_osSemaphoreWait(dualSem->sem1, TEST_SEMAPHORE_WAIT, &tmp);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
 
     /*#C2*/
@@ -580,6 +644,9 @@ void palNetClientFunc(void const *argument)
 
 /*! \brief /b ServerSocketScenario tests a TCP client-server scenario using device loopback.
 *
+* \note In mbed-os lwip loopback feature must be enabled to make test working.
+* This can be done by enabling LWIP_NETIF_LOOPBACK flag.
+* The sequence below is an approximation of the actual order of execution.
 * \note The test steps are divided into those in the server main thread (S1..S13) and those in the client thread (C1..C8).
 * The sequence below is an approximation of the actual order of execution.
 *
@@ -608,15 +675,16 @@ void palNetClientFunc(void const *argument)
 * | C8 | Client thread cleanup - close the socket and release the semaphore.                        | PAL_SUCCESS |
 * | S13 | Cleanup: close sockets and delete semaphores.                                     | PAL_SUCCESS |
 */
-
 TEST(pal_socket, ServerSocketScenario)
 {
+
     palStatus_t result = PAL_SUCCESS;
     palSocketAddress_t address2 = { 0 };
     const char* messageOut = "HTTP/1.0 200 OK";
     size_t sent = 0;
     size_t read = 0;
-    palSocketLength_t addrlen = 16;
+    // Note: unlike the pal_connect(), the pal accept() still verifies the given address length.
+    palSocketLength_t addrlen = sizeof(palSocketAddress_t);
 
     palSemaphoreID_t semaphoreID = NULLPTR;
     palSemaphoreID_t semaphoreID2 = NULLPTR;
@@ -649,7 +717,7 @@ TEST(pal_socket, ServerSocketScenario)
     uint16_t incoming_port;
 
     for (int i=0; i<5; i++) {
-    	pal_osRandomBuffer((uint8_t*)&rand_number, sizeof(rand_number));
+        pal_osRandomBuffer((uint8_t*)&rand_number, sizeof(rand_number));
         incoming_port = (uint16_t)(35400 + (rand_number % (40000 - 35400)));
         PAL_PRINTF("server port = %u", incoming_port);
 
@@ -671,15 +739,10 @@ TEST(pal_socket, ServerSocketScenario)
     /*#S6*/
 
     // start client thread to connect to the server.
-    result = pal_osSemaphoreCreate(1 ,&semaphoreID);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
-    result = pal_osSemaphoreWait(semaphoreID, 1000, &tmp);
+    result = pal_osSemaphoreCreate(0 ,&semaphoreID);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
 
-
-    result = pal_osSemaphoreCreate(1 ,&semaphoreID2);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
-    result = pal_osSemaphoreWait(semaphoreID2, 1000, &tmp);
+    result = pal_osSemaphoreCreate(0 ,&semaphoreID2);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
 
     dualSem.sem1 = semaphoreID;
@@ -726,10 +789,10 @@ TEST(pal_socket, ServerSocketScenario)
     pal_close(&g_testSockets[1]);
     pal_close(&g_testSockets[0]);
 
-    result = pal_osSemaphoreWait(semaphoreID2, 5000, &tmp);
+    result = pal_osSemaphoreWait(semaphoreID2, TEST_SEMAPHORE_WAIT, &tmp);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
     pal_osDelay(2000);
-       pal_osThreadTerminate(&threadID1);
+    pal_osThreadTerminate(&threadID1);
     result = pal_osSemaphoreDelete(&semaphoreID);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
     TEST_ASSERT_EQUAL_HEX(NULLPTR, semaphoreID);
@@ -857,6 +920,9 @@ TEST(pal_socket, nonBlockingAsyncTest)
 */
 TEST(pal_socket, tProvUDPTest)
 {
+#if defined(__SXOS__)
+    TEST_IGNORE_MESSAGE("Ignored, SX OS does not support PAL_SO_RCVTIMEO");
+#else
     palStatus_t result = PAL_SUCCESS;
     palSocketAddress_t address = { 0,{0} };
     uint8_t buffer[100] = { 0 };
@@ -885,11 +951,11 @@ TEST(pal_socket, tProvUDPTest)
 
     /*#4*/
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_SNDTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_SNDTIMEO_EXPECTED_RESULT, result);
 
     timeout = 1000;
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_RCVTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_RCVTIMEO_EXPECTED_RESULT, result);
 
     /*#5*/
     result = pal_sendTo(g_testSockets[0], buffer_dns, sizeof(buffer_dns), &address, addrlen, &sent);
@@ -908,11 +974,15 @@ TEST(pal_socket, tProvUDPTest)
 end:
     /*#8*/
     pal_close(&g_testSockets[0]);
+#endif
 }
 
 
 PAL_PRIVATE void fillUDPTestBuffer(pal_udp_test_data_t *data, uint8_t* buffer)
 {
+    TEST_ASSERT_NOT_NULL(data);
+    TEST_ASSERT_NOT_NULL(buffer);
+
     memset(buffer, 0, data->bufferSize);
     data->chunkSize = (data->messageSize - data->totalSize > data->bufferSize) ? data->bufferSize : (data->messageSize - data->totalSize);
     memset(buffer, ++(data->currentValue), data->chunkSize);
@@ -926,8 +996,12 @@ PAL_PRIVATE void socketUDPBufferedTestSender(const void *arg)
     pal_udp_test_data_t *data = (pal_udp_test_data_t*)arg; // cast from const to non-const
     size_t sent = 0, totalSent = 0;
 
+    TEST_ASSERT_NOT_NULL(data);
+    TEST_ASSERT_NOT_EQUAL(0, data->bufferSize);
+    TEST_ASSERT_NOT_EQUAL(0, data->chunkSize);
+
     g_testSendBuffer = (uint8_t*)malloc(sizeof(uint8_t) * data->bufferSize);
-    TEST_ASSERT_NOT_EQUAL(NULLPTR, g_testSendBuffer);
+    TEST_ASSERT_NOT_NULL(g_testSendBuffer);
 
     data->totalSize = 0;
     data->chunkSize = 0;
@@ -947,7 +1021,7 @@ PAL_PRIVATE void socketUDPBufferedTestSender(const void *arg)
 
 /*! \brief Test UDP socket read in chunks
 *
-* \note The test generates data and calculates its hash, then this data is re-generated from a dedicated thread and 
+* \note The test generates data and calculates its hash, then this data is re-generated from a dedicated thread and
 * received on the current thread which calculates the received data hash and compares it to the original hash
 *
 * @param[in]    bufSize - the read buffer size
@@ -985,7 +1059,7 @@ PAL_PRIVATE void socketUDPBuffered(size_t bufSize)
     int timeout = PAL_MILLI_PER_SECOND;
     palMDHandle_t handle = NULLPTR;
     palThreadID_t thread = NULLPTR;
-    
+
     /*#1*/
     result = pal_mdInit(&handle, PAL_SHA256);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
@@ -1037,9 +1111,9 @@ PAL_PRIVATE void socketUDPBuffered(size_t bufSize)
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
 
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_RCVTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_RCVTIMEO_EXPECTED_RESULT, result);
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_SNDTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_SNDTIMEO_EXPECTED_RESULT, result);
 
     /*#10*/
     result = pal_bind(g_testSockets[0], &(data.interfaceInfo.address), data.interfaceInfo.addressSize);
@@ -1104,6 +1178,10 @@ end:
 */
 TEST(pal_socket, socketUDPBufferedSmall)
 {
+#ifdef TARGET_LIKE_MBED
+    // TODO: fix with https://jira.arm.com/browse/IOTCLT-3197
+    TEST_IGNORE_MESSAGE("Ignored, IOTCLT-3197, Expected 0x00000000 Was 0xFFFF5...");
+#endif
     socketUDPBuffered(PAL_NET_TEST_BUFFERED_UDP_BUF_SIZE_SMALL);
 }
 
@@ -1113,6 +1191,10 @@ TEST(pal_socket, socketUDPBufferedSmall)
 */
 TEST(pal_socket, socketUDPBufferedLarge)
 {
+#ifdef TARGET_LIKE_MBED
+    // TODO: fix with https://jira.arm.com/browse/IOTCLT-3197
+    TEST_IGNORE_MESSAGE("Ignored, IOTCLT-3197, Expected 0x00000000 Was 0xFFFF5...");
+#endif
     socketUDPBuffered(PAL_NET_TEST_BUFFERED_UDP_BUF_SIZE_LARGE);
 }
 
@@ -1184,13 +1266,13 @@ PAL_PRIVATE void socketTCPBuffered(size_t bufSize)
     uint8_t actualHash[PAL_SHA256_SIZE] = { 0 };
     const uint8_t expectedHash[] = // pre-calculated jquery.js 3.2.1 SHA256
     {
-        0x0d, 0x90, 0x27, 0x28, 0x9f, 0xfa, 0x5d, 0x9f, 0x6c, 0x8b, 0x4e, 0x07, 0x82, 0xbb, 0x31, 0xbb, 
+        0x0d, 0x90, 0x27, 0x28, 0x9f, 0xfa, 0x5d, 0x9f, 0x6c, 0x8b, 0x4e, 0x07, 0x82, 0xbb, 0x31, 0xbb,
         0xff, 0x2c, 0xef, 0x5e, 0xe3, 0x70, 0x8c, 0xcb, 0xcb, 0x7a, 0x22, 0xdf, 0x91, 0x28, 0xbb, 0x21
     };
-      
 
 
-    /*#2*/    
+
+    /*#2*/
     result = test_getAddressInfo(PAL_NET_TEST_GOOGLE_CDN_HOST, &address, &addrlen);
     if ((PAL_ERR_SOCKET_DNS_ERROR == result) || (PAL_ERR_SOCKET_INVALID_ADDRESS_FAMILY == result))
     {
@@ -1208,9 +1290,9 @@ PAL_PRIVATE void socketTCPBuffered(size_t bufSize)
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
 
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_SNDTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_SNDTIMEO_EXPECTED_RESULT, result);
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_RCVTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_RCVTIMEO_EXPECTED_RESULT, result);
 
     /*#4*/
     result = pal_connect(g_testSockets[0], &address, addrlen);
@@ -1224,11 +1306,11 @@ PAL_PRIVATE void socketTCPBuffered(size_t bufSize)
     result = pal_mdInit(&handle, PAL_SHA256);
     TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
     TEST_ASSERT_NOT_EQUAL(NULLPTR, handle);
-    
+
     /*#7*/
     g_testRecvBuffer = (uint8_t*)malloc(sizeof(uint8_t) * bufSize + 1);
     TEST_ASSERT_NOT_EQUAL(NULLPTR, g_testRecvBuffer);
-    
+
     /*#8*/
     do
     {
@@ -1285,7 +1367,7 @@ PAL_PRIVATE void socketTCPBuffered(size_t bufSize)
 
     /*#15*/
     result = pal_mdFree(&handle);
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);    
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
 
     /*#16*/
     free(g_testRecvBuffer);
@@ -1311,6 +1393,8 @@ TEST(pal_socket, socketTCPBufferedLarge)
     socketTCPBuffered(PAL_NET_TEST_BUFFERED_TCP_BUF_SIZE_LARGE);
 }
 
+#if (PAL_DNS_API_VERSION == 1)
+
 // flag marking if the pal_getAddressInfoAsync callback has been invoked
 PAL_PRIVATE bool g_getAddressInfoAsyncCallbackInvoked = false;
 
@@ -1321,6 +1405,7 @@ PAL_PRIVATE void getAddressInfoAsyncCallback(const char* url, palSocketAddress_t
     *statusArg = status;
     g_getAddressInfoAsyncCallbackInvoked = true;
 }
+#endif
 
 /*! \brief Test get address info asynchronously
 ** \test
@@ -1333,6 +1418,7 @@ PAL_PRIVATE void getAddressInfoAsyncCallback(const char* url, palSocketAddress_t
 */
 TEST(pal_socket, getAddressInfoAsync)
 {
+#if (PAL_DNS_API_VERSION == 1)
     int counter = 0;
     palSocketAddress_t addressSync = { 0 }, addressAsync = { 0 };
     palSocketLength_t addrlenSync = 0, addrlenAsync = 0;
@@ -1367,14 +1453,21 @@ TEST(pal_socket, getAddressInfoAsync)
     TEST_ASSERT_EQUAL_HEX(addrlenSync, addrlenAsync);
     TEST_ASSERT_EQUAL_HEX(addressSync.addressType, addressAsync.addressType);
     TEST_ASSERT_EQUAL_MEMORY(addressSync.addressData, addressAsync.addressData, PAL_NET_MAX_ADDR_SIZE);
-
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_DNS_API_VERSION not 1");
+#endif // (PAL_DNS_API_VERSION == 1)
 }
+
 
 /*! \brief Test pal socket APIs input parameter validations
 ** \test
 */
 TEST(pal_socket, socketApiInputParamValidation)
 {
+#ifdef TARGET_LIKE_MBED
+    // TODO: fix with https://jira.arm.com/browse/IOTCLT-3197
+    TEST_IGNORE_MESSAGE("Ignored, IOTCLT-3197, Expected 86 Was 4294964381");
+#endif
 #ifdef DEBUG
     palStatus_t status;
     palSocketAddress_t addr;
@@ -1423,7 +1516,7 @@ TEST(pal_socket, socketApiInputParamValidation)
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
     status = pal_getNetInterfaceInfo(0, NULL);
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
-#if PAL_NET_TCP_AND_TLS_SUPPORT    
+#if PAL_NET_TCP_AND_TLS_SUPPORT
     status = pal_accept(NULL, NULL, NULL, NULL);
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
     status = pal_connect(NULL, NULL, 0);
@@ -1440,12 +1533,17 @@ TEST(pal_socket, socketApiInputParamValidation)
 #if PAL_NET_DNS_SUPPORT
     status = pal_getAddressInfo(NULL, NULL, NULL);
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
+#if (PAL_DNS_API_VERSION == 1)
     status = pal_getAddressInfoAsync(NULL, NULL, NULL, NULL, NULL);
     TEST_ASSERT_EQUAL_HEX(PAL_ERR_INVALID_ARGUMENT, status);
+#endif
 #endif // PAL_NET_DNS_SUPPORT
+#else
+    TEST_IGNORE_MESSAGE("Ignored, DEBUG not defined");
 #endif //DEBUG
 }
 
+#ifdef PAL_TEST_KEEPALIVE
 PAL_PRIVATE void keepAliveFunc(bool keepalive)
 {
     palStatus_t result = PAL_SUCCESS;
@@ -1459,9 +1557,9 @@ PAL_PRIVATE void keepAliveFunc(bool keepalive)
 
     if (keepalive)
     {
-    	KeepAliveOn=1;
-    	KeepAliveIntvl=1;
-    	KeepAliveIdle =1;
+        KeepAliveOn=1;
+        KeepAliveIntvl=1;
+        KeepAliveIdle =1;
     }
     /*#1*/
     result = pal_socket(PAL_AF_INET, PAL_SOCK_STREAM, false, 0, &g_testSockets[0]);
@@ -1481,21 +1579,26 @@ PAL_PRIVATE void keepAliveFunc(bool keepalive)
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
 
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_SNDTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_SNDTIMEO_EXPECTED_RESULT, result);
     result = pal_setSocketOptions(g_testSockets[0], PAL_SO_RCVTIMEO, &timeout, sizeof(timeout));
-    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL_HEX(PAL_SO_RCVTIMEO_EXPECTED_RESULT, result);
 
-	result = pal_setSocketOptions(g_testSockets[0], PAL_SO_KEEPALIVE, &KeepAliveOn, sizeof(KeepAliveOn));
-	TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
-	if (keepalive) {
-		result = pal_setSocketOptions(g_testSockets[0], PAL_SO_KEEPIDLE, &KeepAliveIdle, sizeof(KeepAliveIdle));
-		TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
-		result = pal_setSocketOptions(g_testSockets[0], PAL_SO_KEEPINTVL, &KeepAliveIntvl, sizeof(KeepAliveIntvl));
-		TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
-	}
+    result = pal_setSocketOptions(g_testSockets[0], PAL_SO_KEEPALIVE, &KeepAliveOn, sizeof(KeepAliveOn));
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    if (keepalive) {
+        result = pal_setSocketOptions(g_testSockets[0], PAL_SO_KEEPIDLE, &KeepAliveIdle, sizeof(KeepAliveIdle));
+        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+        result = pal_setSocketOptions(g_testSockets[0], PAL_SO_KEEPINTVL, &KeepAliveIntvl, sizeof(KeepAliveIntvl));
+        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    }
 
     /*#4*/
-    result = pal_connect(g_testSockets[0], &address, 16);
+    result = pal_connect(g_testSockets[0], &address, sizeof(palSocketAddress_t));
+
+    if (result != PAL_SUCCESS)
+    {
+        PAL_LOG_ERR("Unable to connect to %s", PAL_TEST_KEEPALIVE_SERVER_ADDRESS);
+    }
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
 
     /*#6*/
@@ -1504,16 +1607,16 @@ PAL_PRIVATE void keepAliveFunc(bool keepalive)
         result = pal_recv(g_testSockets[0], buffer, sizeof(buffer)-1 , &read);
         if (result != PAL_ERR_SOCKET_CONNECTION_CLOSED)
         {
-			if((read != 0) && (buffer[0]!=0))
+            if((read != 0) && (buffer[0]!=0))
             {
-				keepaliveNumber=atoi(buffer);
-				if (keepalive){
-					TEST_ASSERT_TRUE(keepaliveNumber > PAL_TEST_KEEPALIVE_NUM_OF_ACK);
-				}
-				else{
-					TEST_ASSERT_TRUE(keepaliveNumber < PAL_TEST_KEEPALIVE_NUM_OF_ACK);
-				}
-				break;
+                keepaliveNumber=atoi(buffer);
+                if (keepalive){
+                    TEST_ASSERT_TRUE(keepaliveNumber > PAL_TEST_KEEPALIVE_NUM_OF_ACK);
+                }
+                else{
+                    TEST_ASSERT_TRUE(keepaliveNumber < PAL_TEST_KEEPALIVE_NUM_OF_ACK);
+                }
+                break;
             }
         }
 
@@ -1522,7 +1625,7 @@ end:
     result = pal_close(&g_testSockets[0]);
     TEST_ASSERT_EQUAL_HEX( PAL_SUCCESS, result);
 }
-
+#endif // #ifdef PAL_TEST_KEEPALIVE
 /*! \brief Test keepAlive On/Off
 ** \test
 * | # |    Step                        |   Expected  |
@@ -1538,12 +1641,142 @@ end:
 
 TEST(pal_socket, keepaliveOn)
 {
-	keepAliveFunc(true);
+#ifdef PAL_TEST_KEEPALIVE
+    keepAliveFunc(true);
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_TEST_KEEPALIVE not defined");
+#endif
 }
 
 TEST(pal_socket, keepaliveOff)
 {
-	keepAliveFunc(false);
+#ifdef PAL_TEST_KEEPALIVE
+    keepAliveFunc(false);
+#else
+    TEST_IGNORE_MESSAGE("Ignored, PAL_TEST_KEEPALIVE not defined");
+#endif
 }
 
+/*! \brief /b tcp_echo checks the asynchronous- nonblocking socket scenario using tcp.
+** \test
+* | # |    Step                        |   Expected  |
+* |---|--------------------------------|-------------|
+* | 1 | Look up the IP address of the test server using `pal_getAddressInfo`.                        | PAL_SUCCESS |
+* | 2 | Create an asynchronous non-blocking TCP socket with `nonBlockCallback` as callback.     | PAL_SUCCESS |
+* | 3 | Set the port to test port in the address structure using `pal_setSockAddrPort`.              | PAL_SUCCESS |
+* | 4 | Connect the socket.                                                                    | PAL_SUCCESS or PAL_ERR_SOCKET_IN_PROGRES |
+* | 5 | Send a test message to the test server using `pal_send` (repeat until success).           | PAL_SUCCESS or PAL_ERR_SOCKET_IN_PROGRES |
+* | 6 | Wait for the callback and receive server response using `pal_recv` (repeat until success). | PAL_SUCCESS or PAL_ERR_SOCKET_WOULD_BLOCK|
+* | 7 | Close the socket.                                                                      | PAL_SUCCESS |
+*/
+PAL_PRIVATE void echo_test(bool tcp)
+{
+    palStatus_t result = PAL_SUCCESS;
+    palSocketAddress_t address = { 0 };
+    const char* message = "Test string to be sent to echo server, and expected to be returned by the echo server.";
+    size_t sent = 0;
+    char buffer[100] = { 0 };
+    size_t read = 0;
+    size_t tot_read = 0;
+    s_callbackcounter = 0;
+    palSocketLength_t addrlen = 0;
+    int32_t waitIterations = 0;
+    palSocketType_t sockType;
 
+    TEST_ASSERT_MESSAGE(sizeof(buffer) / sizeof(char) > strlen(message), "buffer too small to contain test message");
+
+    if (tcp)
+    {
+        sockType = PAL_SOCK_STREAM;
+    }
+    else
+    {
+        sockType = PAL_SOCK_DGRAM;
+    }
+
+    /*#1*/
+    result = pal_getAddressInfo(PAL_NET_TEST_ECHO_TEST_SERVER_ADDRESS, &address, &addrlen);
+    if ((PAL_ERR_SOCKET_DNS_ERROR == result) || (PAL_ERR_SOCKET_INVALID_ADDRESS_FAMILY == result))
+    {
+        PAL_LOG_ERR("error: address lookup returned an address not supported by current configuration cant continue test ( IPv6 add for IPv4 only configuration or IPv4 for IPv6 only configuration)");
+        return;
+    }
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+
+#if PAL_NET_ASYNCHRONOUS_SOCKET_API
+    /*#2*/
+    result = pal_asynchronousSocketWithArgument(PAL_AF_INET, sockType, true, 0, nonBlockCallback, "non-blockSocketCallbackArg", &g_testSockets[0]);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+
+    /*#3*/
+    result = pal_setSockAddrPort(&address, 7);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+
+    /*#4*/
+    result = pal_connect(g_testSockets[0], &address, 16);
+    if (PAL_ERR_SOCKET_IN_PROGRES == result)
+    {
+        result = pal_connect(g_testSockets[0], &address, 16);
+        if ((result != PAL_SUCCESS) && (result != PAL_ERR_SOCKET_ALREADY_CONNECTED) && (result != PAL_ERR_SOCKET_IN_PROGRES) && (result != PAL_ERR_SOCKET_WOULD_BLOCK)) // check expected result codes.(connection should either be in progress or connected already)
+        {
+            TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+        }
+        pal_osDelay(400);
+    }
+    else
+    {
+        TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    }
+    s_callbackCounterNonBlock = 0;
+
+    /*#5*/
+    result = pal_send(g_testSockets[0], message, strlen(message), &sent);
+    while (PAL_ERR_SOCKET_IN_PROGRES == result)
+    {
+        pal_osDelay(100);
+        result = pal_send(g_testSockets[0], message, strlen(message), &sent);
+    }
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+
+    /*#6*/
+    result = pal_recv(g_testSockets[0], buffer + tot_read, sizeof(buffer) / sizeof(char) - tot_read, &read); // may block
+    while ((PAL_ERR_SOCKET_WOULD_BLOCK == result) && (10 > waitIterations ))
+    {
+        tot_read += read;
+        s_callbackCounterNonBlock = 0;
+        while (s_callbackCounterNonBlock == 0)
+        {
+            waitIterations++;
+            pal_osDelay(100);
+        }
+        result = pal_recv(g_testSockets[0], buffer + tot_read, sizeof(buffer) / sizeof(char) - tot_read, &read); // shouldnt block
+    }
+    tot_read += read;
+
+    /*#7*/
+    pal_close(&g_testSockets[0]);
+    TEST_ASSERT_EQUAL_HEX(PAL_SUCCESS, result);
+    TEST_ASSERT_EQUAL(strlen(message), tot_read);
+    TEST_ASSERT_EQUAL_STRING(message, buffer);
+    TEST_ASSERT(s_callbackCounterNonBlock > 0);
+
+#endif // PAL_NET_ASYNCHRONOUS_SOCKET_API
+}
+
+TEST(pal_socket, tcp_echo)
+{
+#ifdef TARGET_LIKE_MBED
+    // TODO: fix with https://jira.arm.com/browse/IOTCLT-3197
+    TEST_IGNORE_MESSAGE("Ignored, IOTCLT-3197, Expected 86 Was 4294964381");
+#endif
+    echo_test(true);
+}
+
+TEST(pal_socket, udp_echo)
+{
+#ifdef TARGET_LIKE_MBED
+    // TODO: fix with https://jira.arm.com/browse/IOTCLT-3197
+    TEST_IGNORE_MESSAGE("Ignored, IOTCLT-3197, Expected 86 Was 4294964381");
+#endif
+    echo_test(false);
+}

@@ -22,7 +22,7 @@
 #include "mbed-client/functionpointer.h"
 
 #include "sn_coap_protocol.h"
-#include "sn_nsdl_lib.h"
+#include "nsdl-c/sn_nsdl_lib.h"
 
 
 //FORWARD DECLARATION
@@ -35,10 +35,10 @@ typedef Vector<M2MObject*> M2MObjectList;
 typedef Vector<M2MBase*> M2MBaseList;
 typedef FP callback_handler;
 
-// TODO! Add more errors
 typedef enum request_error_e {
-    FAILED_TO_SEND_MSG = 0,
-    FAILED_TO_ALLOCATE_MEMORY = 1
+    FAILED_TO_SEND_MSG = 0, // Message sending has failed
+    FAILED_TO_ALLOCATE_MEMORY = 1, // Can't allocate memory for the request
+    ERROR_NOT_REGISTERED = 2 // Not registered, request will NOT to be stored for resending purposes
 } request_error_t;
 
 typedef request_error_e get_data_req_error_e;
@@ -102,7 +102,9 @@ public:
         SecureConnectionFailed,
         DnsResolvingFailed,
         UnregistrationFailed,
-        ESTEnrollmentFailed
+        ESTEnrollmentFailed,
+        FailedToStoreCredentials,
+        FailedToReadCredentials
     }Error;
 
     /**
@@ -282,13 +284,13 @@ public:
      * @brief Updates the endpoint name.
      * @param name New endpoint name
      */
-    virtual void update_endpoint(String &name) = 0;
+    virtual void update_endpoint(const String &name) = 0;
 
     /**
      * @brief Updates the domain name.
      * @param domain New domain name
      */
-    virtual void update_domain(String &domain) = 0;
+    virtual void update_domain(const String &domain) = 0;
 
 
     /**
@@ -346,6 +348,27 @@ public:
      * @return False if maximum length exceeded otherwise True.
     */
     virtual bool set_uri_query_parameters(const char *uri_query_params) = 0;
+
+    /**
+     * \brief Pauses client's timed functionality and closes network connection
+     * to the Cloud. After successful call the operation is continued
+     * by calling resume().
+     *
+     * \note This operation does not unregister client from the Cloud.
+     * Closes the socket and removes interface from the interface list.
+     */
+    virtual void pause() = 0;
+
+    /**
+     * \brief Resumes client's timed functionality and network connection
+     * to the Cloud. Updates registration. Can be only called after
+     * a successful call to pause().
+     *
+     * \param iface A handler to the network interface.
+     * \param object_list Objects that contain information about the resources to
+     *  register to the LWM2M server.
+     */
+    virtual void resume(void *iface, const M2MBaseList &object_list) = 0;
 };
 
 #endif // M2M_INTERFACE_H

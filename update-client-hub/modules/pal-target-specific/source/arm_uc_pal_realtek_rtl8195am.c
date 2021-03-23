@@ -23,8 +23,8 @@
 #include "update-client-paal/arm_uc_paal_update_api.h"
 #include "update-client-pal-flashiap/arm_uc_pal_flashiap_platform.h"
 
-#include "update-client-common/arm_uc_metadata_header_v2.h"
-#include "update-client-common/arm_uc_common.h"
+#include "update-client-metadata-header/arm_uc_metadata_header_v2.h"
+
 
 #include "ota_api.h"
 #include "flash_ext.h"
@@ -437,6 +437,7 @@ arm_uc_error_t ARM_UC_PAL_RTL8195AM_Prepare(uint32_t location,
             }
         } else {
             UC_PAAL_ERR_MSG("firmware larger than slot");
+            result.code = PAAL_ERR_FIRMWARE_TOO_LARGE;
         }
     }
 

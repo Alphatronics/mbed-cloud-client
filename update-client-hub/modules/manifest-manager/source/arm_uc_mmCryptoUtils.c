@@ -22,7 +22,7 @@
 #include "arm_uc_mmDerManifestParser.h"
 #include "update-client-common/arm_uc_crypto.h"
 #include "update-client-common/arm_uc_config.h"
-
+#include "update-client-metadata-header/arm_uc_buffer_utilities.h"
 #include "update-client-control-center/arm_uc_certificate.h"
 #include "update-client-control-center/arm_uc_pre_shared_key.h"
 
@@ -39,7 +39,7 @@ extern int ARM_UC_MM_ASN1_get_tag(unsigned char **p,
                                   const unsigned char *end,
                                   size_t *len, int tag);
 
-void ARM_UC_mmVerifySignatureEntry(uint32_t event);
+void ARM_UC_mmVerifySignatureEntry(uintptr_t event);
 /**
  * @file Cryptographic utilities
  * This file provides two primary APIs:
@@ -76,6 +76,7 @@ struct cryptsize getCryptInfo(arm_uc_buffer_t *buffer)
         case MFST_CRYPT_SHA256_ECC_AES128_PSK:
             cs.aeslen = 128 / CHAR_BIT;
             // fall through
+            __attribute__((fallthrough)); // prevent fallthrough warning
             // case MFST_CRYPT_SHA256_HMAC:
 #endif /* ARM_UC_FEATURE_MANIFEST_PUBKEY */
         case MFST_CRYPT_SHA256:
@@ -151,14 +152,14 @@ arm_uc_mm_crypto_flags_t ARM_UC_mmGetCryptoFlags(uint32_t cryptoMode)
  *          with a known-good hash buffer. Typically, this buffer will be stack-allocated.
  * @param[in]   buffer The manifest to parse
  * @param[out]  hash   Output buffer object to fill with the hash
- * @return             MFST_ERR_NONE on success, or a parser error code otherwise
+ * @return             ERR_NONE on success, or a parser error code otherwise
  */
 arm_uc_error_t ARM_UC_mmGetManifestHashFromBin(arm_uc_buffer_t *buffer, arm_uc_buffer_t *hash)
 {
     const int32_t fieldID = ARM_UC_MM_DER_SIG_HASH;
     int rc = ARM_UC_mmDERGetSignedResourceValues(buffer, 1U, &fieldID, hash);
     if (rc) return (arm_uc_error_t) {MFST_ERR_DER_FORMAT};
-    return (arm_uc_error_t) {MFST_ERR_NONE};
+    return (arm_uc_error_t) {ERR_NONE};
 }
 
 /**
@@ -191,7 +192,7 @@ static void hexprint_buffer(arm_uc_buffer_t *buf)
  *          requires that the Resource object be a Manifest.
  *
  * @param[in]  buffer The buffer that contains the manifest to validate
- * @retval            MFST_ERR_NONE on success
+ * @retval            ERR_NONE on success
  * @retval            MFST_ERR_CRYPTO_MODE if there is a cryptographic mode error
  * @retval            Otherwise, a DER Parser error can be expected
  */
@@ -214,7 +215,7 @@ arm_uc_error_t ARM_UC_mmValidateManifestHash(arm_uc_buffer_t *buffer)
         .ptr      = NULL
     };
     arm_uc_mdHandle_t hDigest = {0};        ///< This handle is for the digest algorithm
-    arm_uc_error_t err = {MFST_ERR_NONE};   ///< The return code variable
+    arm_uc_error_t err = {ERR_NONE};   ///< The return code variable
     uint32_t cryptoMode = 0;                ///< A temporary local copy of the crytpoMode
     arm_uc_mdType_t mdType = 0;             ///< A type designator for the type of hash in use
 
@@ -273,7 +274,7 @@ arm_uc_error_t ARM_UC_mmValidateManifestHash(arm_uc_buffer_t *buffer)
     }
     // Explicitly set the manifest manager's no-error code, rather than another module's, which may be present here.
     if (!err.error) {
-        ARM_UC_SET_ERROR(err, MFST_ERR_NONE);
+        ARM_UC_SET_ERROR(err, ERR_NONE);
     }
     return err;
 }
@@ -293,9 +294,82 @@ enum arm_uc_mmCertificateFetchEvents {
  * @retval          MFST_ERR_DER_FORMAT on parse error
  * @retval          MFST_ERR_CERT_INVALID if the certificate is not valid
  * @retval          MFST_ERR_INVALID_SIGNATURE if the signature is invalid
- * @retval          MFST_ERR_NONE for a valid signature
+ * @retval          ERR_NONE for a valid signature
  */
 #if defined(ARM_UC_FEATURE_MANIFEST_PUBKEY) && (ARM_UC_FEATURE_MANIFEST_PUBKEY == 1)
+
+#if defined(ARM_UC_FEATURE_CRYPTO_MBEDTLS) && (ARM_UC_FEATURE_CRYPTO_MBEDTLS == 1)
+/**
+ * @brief Verify a public key signature
+ * @details This function loads a certificate out of `ca`, and validates `hash` using the certificate and `sig`. If the
+ *          certificate used by this function requires a certificate chain validation (i.e. it is not the root of trust,
+ *          or it has not been previously validated), certificate chain validation should be done prior to calling this
+ *          function.
+ *
+ * WARNING: this function is to be used only inside a function where its arguments have been error checked.
+ * WARNING: This is an internal utility function and is not accessible outside of the manifest manager.
+ *
+ * @param[in] ca A pointer to a buffer that contains the signing certificate.
+ * @param[in] hash A pointer to a buffer containing the hash to verify.
+ * @param[in] sig A pointer to a buffer containing a signature by `ca`
+ * @retval MFST_ERR_CERT_INVALID when the certificate fails to load
+ * @retval MFST_ERR_INVALID_SIGNATURE when signature verification fails
+ * @retval ERR_OUT_OF_MEMORY when run out of memory
+ * @retval ERR_NONE for a valid signature
+ */
+static arm_uc_error_t ARM_UC_verifyPkSignature(const arm_uc_buffer_t *ca, const arm_uc_buffer_t *hash,
+                                        const arm_uc_buffer_t *sig)
+{
+    arm_uc_error_t err = {ERR_NONE};
+    mbedtls_x509_crt crt;
+    mbedtls_x509_crt_init(&crt);
+    int rc = mbedtls_x509_crt_parse_der(&crt, ca->ptr, ca->size);
+    if (rc == MBEDTLS_ERR_X509_ALLOC_FAILED) {
+        err.code = ERR_OUT_OF_MEMORY;
+    } else if (rc < 0) {
+        UC_MMGR_ERR_MSG("mbedtls_x509_crt_parse_der returned error "PRIu32,  rc);
+        err.code = MFST_ERR_CERT_INVALID;
+    } else {
+        rc = mbedtls_pk_verify(&crt.pk, MBEDTLS_MD_SHA256, hash->ptr, hash->size, sig->ptr, sig->size);
+        if (rc < 0) {
+            UC_MMGR_ERR_MSG("mbedtls_pk_verify returned error "PRIu32,  rc);
+            err.code = MFST_ERR_INVALID_SIGNATURE;
+        }
+    }
+    return err;
+}
+#elif defined(ARM_UC_FEATURE_CRYPTO_PAL) && (ARM_UC_FEATURE_CRYPTO_PAL == 1)
+
+arm_uc_error_t ARM_UC_verifyPkSignature(const arm_uc_buffer_t *ca, const arm_uc_buffer_t *hash,
+                                        const arm_uc_buffer_t *sig)
+{
+    arm_uc_error_t err = {MFST_ERR_CERT_INVALID};
+    palX509Handle_t x509Cert;
+    palStatus_t status = pal_x509Initiate(&x509Cert);
+    if (PAL_SUCCESS == status) {
+        err.code = MFST_ERR_CERT_INVALID;
+        if (PAL_SUCCESS == pal_x509CertParse(x509Cert, ca->ptr, ca->size)) {
+            // if (PAL_SUCCESS == pal_x509CertVerify(x509Cert, palX509Handle_t x509CertChain))
+            // {
+            err.code = MFST_ERR_INVALID_SIGNATURE;
+            status = pal_verifySignature(x509Cert, PAL_SHA256, hash->ptr, hash->size, sig->ptr, sig->size);
+            if (PAL_SUCCESS == status) {
+                err.code = ERR_NONE;
+            } else if (PAL_ERR_CRYPTO_ALLOC_FAILED == status) {
+                err.code = ERR_OUT_OF_MEMORY;
+            } else {
+                UC_MMGR_ERR_MSG("pal_verifySignature returned error "PRIu32,  status);
+            }
+            // }
+        }
+        pal_x509Free(&x509Cert);
+    } else if (PAL_ERR_CREATION_FAILED == status) {
+        err.code = ERR_OUT_OF_MEMORY;
+    }
+    return err;
+}
+#endif
+
 static arm_uc_error_t ARM_UC_mmValidateSignatureCert(arm_uc_buffer_t *buffer, arm_uc_buffer_t *ca, uint32_t sigIndex)
 {
     const int32_t fieldIDs[] = {ARM_UC_MM_DER_SIG_HASH, ARM_UC_MM_DER_SIG_SIGNATURES};
@@ -376,7 +450,7 @@ void ARM_UC_mmCertificateCallback(arm_uc_error_t status, const arm_uc_buffer_t *
  *
  * @param[in]  ctx   Context pointer for the state machine
  * @param[in]  event Event to move the state machine forward
- * @retval           MFST_ERR_NONE on success
+ * @retval           ERR_NONE on success
  * @retval           MFST_ERR_PENDING when the validation has not completed and is waiting for external input
  *                   (e.g. certificate fetching)
  * @retval           Another error code otherwise.
@@ -384,7 +458,7 @@ void ARM_UC_mmCertificateCallback(arm_uc_error_t status, const arm_uc_buffer_t *
 #if defined(ARM_UC_FEATURE_MANIFEST_PUBKEY) && (ARM_UC_FEATURE_MANIFEST_PUBKEY == 1)
 static arm_uc_error_t ARM_UC_mmValidateSignatureFSM(arm_uc_mm_validate_signature_context_t *ctx, uint32_t event)
 {
-    arm_uc_error_t err = {MFST_ERR_NONE};
+    arm_uc_error_t err = {ERR_NONE};
     enum arm_uc_mm_pk_sig_state oldState;
     UC_MMGR_TRACE("%s (%" PRIu32 ")\n", __PRETTY_FUNCTION__, event);
     do {
@@ -408,7 +482,7 @@ static arm_uc_error_t ARM_UC_mmValidateSignatureFSM(arm_uc_mm_validate_signature
                 switch (event) {
                     // If the certificate was fetched successfully, proceed to signature verification
                     case ARM_UC_MM_CERTIFICATE_FETCH_SUCCESS:
-                        err.code = MFST_ERR_NONE;
+                        err.code = ERR_NONE;
                         ctx->pk_state = UCMM_PKSIG_STATE_CHECK;
                         break;
                     // If an error occured, extract the error.
@@ -427,12 +501,12 @@ static arm_uc_error_t ARM_UC_mmValidateSignatureFSM(arm_uc_mm_validate_signature
             case UCMM_PKSIG_STATE_CHECK:
                 err = ARM_UC_mmValidateSignatureCert(ctx->manifest,
                                                      &ctx->cert, ctx->sigIndex);
-                if (err.code == MFST_ERR_NONE) {
+                if (err.code == ERR_NONE) {
                     ctx->pk_state = UCMM_PKSIG_STATE_IDLE;
                 }
                 break;
             case UCMM_PKSIG_STATE_IDLE:
-                err.code = MFST_ERR_NONE;
+                err.code = ERR_NONE;
                 // The Entry function will report success after this state exits.
                 break;
             default:
@@ -440,9 +514,10 @@ static arm_uc_error_t ARM_UC_mmValidateSignatureFSM(arm_uc_mm_validate_signature
                 break;
         }
 
-    } while (err.code == MFST_ERR_NONE && ctx->pk_state != oldState);
+    } while (err.code == ERR_NONE && ctx->pk_state != oldState);
     UC_MMGR_TRACE("%s() return code: %c%c:%hu (%s)\n",
-                  __PRETTY_FUNCTION__, err.modulecc[0], err.modulecc[1], err.error, ARM_UC_err2Str(err));
+                  __PRETTY_FUNCTION__, CC_ASCII(err.modulecc[0]), CC_ASCII(err.modulecc[1]),
+                  err.error, ARM_UC_err2Str(err));
     return err;
 }
 #endif /* ARM_UC_FEATURE_MANIFEST_PUBKEY */
@@ -450,7 +525,7 @@ static arm_uc_error_t ARM_UC_mmValidateSignatureFSM(arm_uc_mm_validate_signature
 #if defined(ARM_UC_FEATURE_MANIFEST_PSK) && (ARM_UC_FEATURE_MANIFEST_PSK == 1)
 static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signature_context_t *ctx, uint32_t event)
 {
-    arm_uc_error_t err = {MFST_ERR_NONE};
+    arm_uc_error_t err = {ERR_NONE};
     enum arm_uc_mm_psk_sig_state oldState;
     UC_MMGR_TRACE("%s (%" PRIu32 ")\n", __PRETTY_FUNCTION__, event);
     do {
@@ -473,7 +548,7 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
                 const char refPrefix[] = "thismessage://";
                 // The following line deliberately excludes a ' - 1' because the URI needs to have
                 // exactly one character following the "thismessage://"
-                err.code = MFST_ERR_NONE;
+                err.code = ERR_NONE;
                 int sizeOK = ctx->keyTableRef.size == sizeof(refPrefix);
                 int matchOK = 0;
                 if (sizeOK) {
@@ -491,13 +566,13 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
                                   ctx->keyTableRef.size);
                 }
                 if (!matchOK) {
-                    UC_MMGR_TRACE("KeyTable Reference Error.");
-                    ARM_UC_SET_ERROR(err, MFST_ERR_BAD_KEYTABLE_REF);
+                    UC_MMGR_TRACE("KeyTable Error - not matched.");
+                    ARM_UC_SET_ERROR(err, MFST_ERR_BAD_KEYTABLE);
                 }
                 // Only position 1 is supported for now. Position 0 is the manifest
                 // Check the signature location
                 if (err.error == ERR_NONE && ctx->keyTableRef.ptr[sizeof(refPrefix) - 1] != '1') {
-                    ARM_UC_SET_ERROR(err, MFST_ERR_BAD_KEYTABLE_REF);
+                    ARM_UC_SET_ERROR(err, MFST_ERR_MISSING_KEYTABLE);
                 }
 
                 uint8_t *p = ctx->manifest->ptr;
@@ -508,19 +583,22 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
                     // To get the signature, we have to find out how big the manifest is.
                     int rc = ARM_UC_MM_ASN1_get_tag(&p, end, &len, ARM_UC_MM_ASN1_SEQUENCE | ARM_UC_MM_ASN1_CONSTRUCTED);
                     if (rc) {
-                        ARM_UC_SET_ERROR(err, MFST_ERR_BAD_KEYTABLE_REF);
+                        UC_MMGR_TRACE("KeyTable Error - get-tag failed, manifest length == %" PRIu32, len);
+                        ARM_UC_SET_ERROR(err, MFST_ERR_MISSING_KEYTABLE);
                     }
                 }
                 if (err.error == ERR_NONE) {
                     p += len;
+                    len = 0;
                     // Now, read the content. Currently, a single binary string is expected.
                     int rc = ARM_UC_MM_ASN1_get_tag(&p, end, &len, ARM_UC_MM_ASN1_OCTET_STRING);
-                    if (rc) {
-                        ARM_UC_SET_ERROR(err, MFST_ERR_BAD_KEYTABLE);
+                    if (rc || (len == 0)) {
+                        UC_MMGR_TRACE("KeyTable Error - get-content failed, keytable length == %" PRIu32, len);
+                        ARM_UC_SET_ERROR(err, len == 0 ? MFST_ERR_MISSING_KEYTABLE : MFST_ERR_BAD_KEYTABLE);
                     }
-                    UC_MMGR_TRACE("Found key table");
                 }
                 if (err.error == ERR_NONE) {
+                    UC_MMGR_TRACE("KeyTable Found");
                     ctx->cipherText.ptr = p;
                     ctx->cipherText.size = len;
                     ctx->cipherText.size_max = len;
@@ -534,6 +612,7 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
                 break;
             // Validate the signature
             case ARM_UC_MM_PSKSIG_STATE_VERIFY: {
+                err.code = ERR_NONE;
                 UC_MMGR_TRACE("Beginning PSK signature verification");
                 mbedtls_ccm_context ccm_ctx;
                 mbedtls_ccm_init(&ccm_ctx);
@@ -554,7 +633,7 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
 
                 uint8_t plaintextBuffer[ARM_UC_SHA512_SIZE + ARM_UC_AES256_KEY_SIZE + 6];
                 // Decrypt the key payload
-                if (rc == 0) {
+                if (err.error == ERR_NONE) {
                     size_t cipherTextSize = ctx->cipherText.size - tagSize;
                     uint8_t *tagPtr = ctx->cipherText.ptr + cipherTextSize;
 
@@ -571,7 +650,7 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
                              tagPtr,
                              tagSize);                       //
 
-                    if (rc == (int)ctx->PSK.size || rc == MBEDTLS_ERR_CCM_AUTH_FAILED) {
+                    if (rc == MBEDTLS_ERR_CCM_AUTH_FAILED) {
                         ARM_UC_SET_ERROR(err, MFST_ERR_INVALID_SIGNATURE);
                     } else if (rc) {
                         UC_MMGR_TRACE("mbedtls_ccm_auth_decrypt failed with %d", rc);
@@ -579,7 +658,7 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
                     }
                 }
                 arm_uc_buffer_t fields[2];
-                if (rc == 0) {
+                if (err.error == ERR_NONE) {
                     arm_uc_buffer_t buf = {
                         .size_max = sizeof(plaintextBuffer),
                         .size = ctx->cipherText.size - tagSize,
@@ -599,24 +678,32 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
                     if (rc == 1 && ctx->encryptionMode == MFST_CRYPT_NONE_PSK_AES128CCM_SHA256) {
                         rc = 0;
                     }
+                    if (rc) {
+                        UC_MMGR_TRACE("ARM_UC_mmDERParseTree failed with %d", rc);
+                        ARM_UC_SET_ERROR(err, MFST_ERR_DER_FORMAT);
+                    }
                 }
                 arm_uc_buffer_t remoteDigest;
-                if (rc == 0) {
+                if (err.error == ERR_NONE) {
                     UC_MMGR_TRACE("Load manifest hash from manifest signature");
                     err = ARM_UC_mmGetManifestHash(ctx->manifest, &remoteDigest);
                 }
-                if (rc == 0 && err.error == ERR_NONE) {
+                if (err.error == ERR_NONE) {
                     UC_MMGR_TRACE("Comparing manifest hash and authenticated hash");
                     rc = ARM_UC_BinCompareCT(&fields[0], &remoteDigest);
+                    if (rc) {
+                        UC_MMGR_TRACE("Manifest hash does not match authenticated hash");
+                        ARM_UC_SET_ERROR(err, MFST_ERR_INVALID_SIGNATURE);
+                    }
                 }
-                if (rc == 0 && err.error == ERR_NONE) {
-                    ARM_UC_SET_ERROR(err, MFST_ERR_NONE);
+                if (err.error == ERR_NONE) {
+                    ARM_UC_SET_ERROR(err, ERR_NONE);
                     ctx->psk_state = ARM_UC_MM_PSKSIG_STATE_IDLE;
                 }
                 break;
             }
             case ARM_UC_MM_PSKSIG_STATE_IDLE:
-                ARM_UC_SET_ERROR(err, MFST_ERR_NONE);
+                ARM_UC_SET_ERROR(err, ERR_NONE);
                 // The Entry function will report success after this state exits.
                 break;
             default:
@@ -625,7 +712,8 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
         }
     } while (err.error == ERR_NONE && ctx->psk_state != oldState);
     UC_MMGR_TRACE("%s() return code: %c%c:%hu (%s)\n",
-                  __PRETTY_FUNCTION__, err.modulecc[0], err.modulecc[1], err.error, ARM_UC_err2Str(err));
+                  __PRETTY_FUNCTION__, CC_ASCII(err.modulecc[0]), CC_ASCII(err.modulecc[1]),
+                  err.error, ARM_UC_err2Str(err));
     return err;
 }
 #endif /* ARM_UC_FEATURE_MANIFEST_PSK */
@@ -638,20 +726,20 @@ static arm_uc_error_t ARM_UC_mmValidateSignaturePSKFSM(arm_uc_mm_validate_signat
  * @param[in]  buffer     A buffer containing the manifest to verify
  * @param[in]  certBuffer A temporary storage buffer for certificate fetching
  * @param[in]  sigIndex   Index of the signature to verify.
- * @retval                MFST_ERR_NONE on success
+ * @retval                ERR_NONE on success
  * @retval                MFST_ERR_PENDING when the validation has not completed and is waiting for external input
  *                        (e.g. certificate fetching)
  * @retval                Another error code otherwise.
  */
 #if defined(ARM_UC_FEATURE_MANIFEST_PUBKEY) && (ARM_UC_FEATURE_MANIFEST_PUBKEY == 1)
 arm_uc_error_t ARM_UC_mmValidateSignature(arm_uc_mm_validate_signature_context_t *ctx,
-                                          void (*applicationEventHandler)(uint32_t),
+                                          void (*applicationEventHandler)(uintptr_t),
                                           arm_uc_buffer_t *buffer,
                                           arm_uc_buffer_t *certBuffer,
                                           uint32_t sigIndex)
 {
     UC_MMGR_TRACE("%s (%u)\n", __PRETTY_FUNCTION__, (unsigned)sigIndex);
-    arm_uc_error_t err = {MFST_ERR_NONE};
+    arm_uc_error_t err = {ERR_NONE};
     if (ctx == NULL) {
         ARM_UC_SET_ERROR(err, MFST_ERR_NULL_PTR);
     }
@@ -665,23 +753,24 @@ arm_uc_error_t ARM_UC_mmValidateSignature(arm_uc_mm_validate_signature_context_t
         arm_uc_mmSignatureVerificationContext.ctx = ctx;
         // Extract the certificate identifier from the manifest
         err = ARM_UC_mmGetCertificateId(buffer, sigIndex, &arm_uc_mmSignatureVerificationContext.ctx->fingerprint);
-        UC_MMGR_TRACE("%s %c%c:%hu (%s)\n", "Get Certificate ID return code:", err.modulecc[0], err.modulecc[1], err.error,
-                      ARM_UC_err2Str(err));
+        UC_MMGR_TRACE("%s %c%c:%hu (%s)\n", "Get Certificate ID return code:",
+                      CC_ASCII(err.modulecc[0]), CC_ASCII(err.modulecc[1]),
+                      err.error, ARM_UC_err2Str(err));
     }
     if (err.error == 0 && ctx) {
         // Copy all the relevant inputs into the state variable
-        err.code = MFST_ERR_NONE;
+        err.code = ERR_NONE;
         arm_uc_mmSignatureVerificationContext.ctx->manifest                = buffer;
         arm_uc_mmSignatureVerificationContext.ctx->applicationEventHandler = applicationEventHandler;
         arm_uc_mmSignatureVerificationContext.ctx->pk_state                = UCMM_PKSIG_STATE_FIND_CA;
         arm_uc_mmSignatureVerificationContext.ctx->sigIndex                = sigIndex;
         ARM_UC_buffer_shallow_copy(&arm_uc_mmSignatureVerificationContext.ctx->cert, certBuffer);
-        UC_MMGR_TRACE("%s Posting ARM_UC_mmVerifySignatureEntry(%" PRIu32 ")\n", __PRETTY_FUNCTION__, ARM_UC_MM_EVENT_BEGIN);
+        UC_MMGR_TRACE("%s Posting ARM_UC_mmVerifySignatureEntry(%" PRIi16 ")\n", __PRETTY_FUNCTION__, ARM_UC_MM_EVENT_BEGIN);
         ARM_UC_PostCallback(&arm_uc_mmSignatureVerificationContext.callbackStorage, ARM_UC_mmVerifySignatureEntry,
                             ARM_UC_MM_EVENT_BEGIN);
     }
-    UC_MMGR_TRACE("%s %c%c:%hu (%s)\n", __PRETTY_FUNCTION__, err.modulecc[0], err.modulecc[1], err.error,
-                  ARM_UC_err2Str(err));
+    UC_MMGR_TRACE("%s %c%c:%hu (%s)\n", __PRETTY_FUNCTION__,
+                  CC_ASCII(err.modulecc[0]), CC_ASCII(err.modulecc[1]), err.error, ARM_UC_err2Str(err));
     return err;
 }
 #endif /* ARM_UC_FEATURE_MANIFEST_PUBKEY */
@@ -693,7 +782,7 @@ arm_uc_error_t ARM_UC_mmValidateSignature(arm_uc_mm_validate_signature_context_t
  *          and it should be called directly from the event queue.
  * @param[in] event Event to forward to the state machine
  */
-void ARM_UC_mmVerifySignatureEntry(uint32_t event)
+void ARM_UC_mmVerifySignatureEntry(uintptr_t event)
 {
     UC_MMGR_TRACE("%s (%u)\n", __PRETTY_FUNCTION__, (unsigned)event);
     arm_uc_error_t err = {MFST_ERR_CRYPTO_MODE};
@@ -712,26 +801,26 @@ void ARM_UC_mmVerifySignatureEntry(uint32_t event)
 #endif /* ARM_UC_FEATURE_MANIFEST_PSK */
     }
 
-    if (err.code != MFST_ERR_NONE && err.code != MFST_ERR_PENDING) {
+    if (err.code != ERR_NONE && err.code != MFST_ERR_PENDING) {
         arm_uc_mmSignatureVerificationContext.ctx->storedError = err;
         arm_uc_mmSignatureVerificationContext.ctx->applicationEventHandler(ARM_UC_MM_RC_ERROR);
     }
-    if (err.code == MFST_ERR_NONE && arm_uc_mmSignatureVerificationContext.ctx->pk_state == UCMM_PKSIG_STATE_IDLE) {
+    if (err.code == ERR_NONE && arm_uc_mmSignatureVerificationContext.ctx->pk_state == UCMM_PKSIG_STATE_IDLE) {
         // A callback is not posted since this runs inside the scheduler
         arm_uc_mmSignatureVerificationContext.ctx->applicationEventHandler(ARM_UC_MM_RC_DONE);
     }
-    UC_MMGR_TRACE("%s %c%c:%hu (%s)\n", __PRETTY_FUNCTION__, err.modulecc[0], err.modulecc[1], err.error,
-                  ARM_UC_err2Str(err));
+    UC_MMGR_TRACE("%s %c%c:%hu (%s)\n", __PRETTY_FUNCTION__,
+                  CC_ASCII(err.modulecc[0]), CC_ASCII(err.modulecc[1]), err.error, ARM_UC_err2Str(err));
 }
 
 #if defined(ARM_UC_FEATURE_MANIFEST_PSK) && (ARM_UC_FEATURE_MANIFEST_PSK == 1)
 arm_uc_error_t ARM_UC_mmVerifySignaturePSK(arm_uc_mm_validate_signature_context_t *ctx,
-                                           void (*applicationEventHandler)(uint32_t),
+                                           void (*applicationEventHandler)(uintptr_t),
                                            arm_uc_buffer_t *buffer,
                                            uint32_t sigIndex)
 {
     UC_MMGR_TRACE("%s (%u)\n", __PRETTY_FUNCTION__, (unsigned)sigIndex);
-    arm_uc_error_t err = {MFST_ERR_NONE};
+    arm_uc_error_t err = {ERR_NONE};
     // Parse the manifest for the hash, the signature (PSK IV) and the certificate list
     arm_uc_buffer_t mac;
     arm_uc_buffer_t fields[3] = {0};
@@ -785,13 +874,15 @@ arm_uc_error_t ARM_UC_mmVerifySignaturePSK(arm_uc_mm_validate_signature_context_
         ARM_UC_buffer_shallow_copy(&ctx->PSKid, &fields[0]);
         ARM_UC_buffer_shallow_copy(&ctx->keyTableIV, &fields[1]);
         ARM_UC_buffer_shallow_copy(&ctx->keyTableRef, &fields[2]);
-        if (ctx->keyTableIV.size < 7 || ctx->keyTableIV.size > 13) {
+        if (ctx->keyTableRef.size == 0) {
+            ARM_UC_SET_ERROR(err, MFST_ERR_MISSING_KEYTABLE);
+        } else if (ctx->keyTableIV.size < 7 || ctx->keyTableIV.size > 13) {
             ARM_UC_SET_ERROR(err, MFST_ERR_CTR_IV_SIZE);
         }
     }
     if (err.error == ERR_NONE && ctx) {
         // Copy all the relevant inputs into the state variable
-        err.code = MFST_ERR_NONE;
+        err.code = ERR_NONE;
         ctx->manifest                = buffer;
         ctx->applicationEventHandler = applicationEventHandler;
         ctx->psk_state                   = ARM_UC_MM_PSKSIG_STATE_FIND_PSK;
@@ -800,11 +891,11 @@ arm_uc_error_t ARM_UC_mmVerifySignaturePSK(arm_uc_mm_validate_signature_context_
         int rc = ARM_UC_PostCallback(&arm_uc_mmSignatureVerificationContext.callbackStorage, ARM_UC_mmVerifySignatureEntry,
                                      ARM_UC_MM_EVENT_BEGIN);
         if (!rc) {
-            ARM_UC_SET_ERROR(err, ERR_NOT_READY);
+            ARM_UC_SET_ERROR(err, MFST_ERR_NOT_READY);
         }
     }
-    UC_MMGR_TRACE("< %s %c%c:%hu (%s)\n", __PRETTY_FUNCTION__, err.modulecc[0], err.modulecc[1], err.error,
-                  ARM_UC_err2Str(err));
+    UC_MMGR_TRACE("< %s %c%c:%hu (%s)\n", __PRETTY_FUNCTION__,
+                  CC_ASCII(err.modulecc[0]), CC_ASCII(err.modulecc[1]), err.error, ARM_UC_err2Str(err));
     return err;
 }
 #endif /* ARM_UC_FEATURE_MANIFEST_PSK */

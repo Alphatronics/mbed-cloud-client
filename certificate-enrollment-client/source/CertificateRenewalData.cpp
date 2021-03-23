@@ -33,6 +33,7 @@ namespace CertificateEnrollmentClient {
         _raw_data_size = raw_data_size;
         cert_name = NULL;
         csr = NULL;
+        csr_size = 0;
         est_data = NULL;
         key_handle = 0;
         _raw_data = (uint8_t *)malloc(raw_data_size);        
@@ -69,33 +70,55 @@ namespace CertificateEnrollmentClient {
     // Parse the CertificateRenewalDataFromServer::data as a CBOR and retrieve the cert name and size
     ce_status_e CertificateRenewalDataFromServer::parse()
     {
+        // NOTE: We should treat the TLV's VALUE according to the given type
+        //       since there is only one type at the moment no parsing is needed.
 
+        ce_tlv_status_e status;
         ce_tlv_element_s element;
+        
+        cert_name = NULL;
 
         if (ce_tlv_parser_init(_raw_data, _raw_data_size, &element) != CE_TLV_STATUS_SUCCESS) {
             return CE_STATUS_BAD_INPUT_FROM_SERVER;
         }
 
-        if (ce_tlv_parse_next(&element) != CE_TLV_STATUS_SUCCESS) {
+        while ((status = ce_tlv_parse_next(&element)) != CE_TLV_STATUS_END) {
+            if (status != CE_TLV_STATUS_SUCCESS) {
+                // something got wrong while parsing
+                return CE_STATUS_BAD_INPUT_FROM_SERVER;
+            }
+
+            // element parsed successfully - check if type supported
+
+            if ((element.type != CE_TLV_TYPE_CERT_NAME) && (is_required(&element))) {
+                return CE_STATUS_BAD_INPUT_FROM_SERVER;
+            } else if ((element.type != CE_TLV_TYPE_CERT_NAME) && (!is_required(&element))) {
+                // unsupported type but optional - ignored
+                continue;
+            }
+
+            cert_name = element.val.text;
+            SA_PV_LOG_INFO("\nParsed certificate to be updated is %s\n", (char *)element.val.text);
+        }
+
+        if (cert_name == NULL) {
+            // parsing succeeded however we haven't got a concrete certificate name
             return CE_STATUS_BAD_INPUT_FROM_SERVER;
         }
 
-        if (element.type != CE_TLV_TYPE_CERT_NAME) {
-            return CE_STATUS_BAD_INPUT_FROM_SERVER;
-        }
-
-        cert_name = element.val.text;
-        SA_PV_LOG_INFO("\nParsed certificate to be updated is %s\n", (char *)element.val.text);
         return CE_STATUS_SUCCESS;
     };
 
     // call the user callback and send message to the cloud
     void CertificateRenewalDataFromServer::finish(ce_status_e status)
     {
-        call_user_cert_renewal_cb(cert_name, status, CE_INITIATOR_SERVER);
         SA_PV_LOG_INFO("sending delayed response, status: %d\n", (int)status);
         g_cert_enroll_lwm2m_resource->set_value((int64_t)status);
         g_cert_enroll_lwm2m_resource->send_delayed_post_response();
+
+        // Call the user callback after setting the resource so that the user may delete the MCC object from the CB.
+        // If we had called the CB prior to setting the resource value, this would result in writing to unallocated memory.
+        call_user_cert_renewal_cb(cert_name, status, CE_INITIATOR_SERVER);
     };
 
     CertificateRenewalDataFromDevice::CertificateRenewalDataFromDevice(const char *raw_data) :
