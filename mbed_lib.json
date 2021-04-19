@@ -4,7 +4,10 @@
         "update-download-protocol": {
             "help": "Set up download protocol for update firmware",
             "required": true,
-            "options": ["MBED_CLOUD_CLIENT_UPDATE_DOWNLOAD_PROTOCOL_COAP", "MBED_CLOUD_CLIENT_UPDATE_DOWNLOAD_PROTOCOL_HTTP"],
+            "options": [
+                "MBED_CLOUD_CLIENT_UPDATE_DOWNLOAD_PROTOCOL_COAP",
+                "MBED_CLOUD_CLIENT_UPDATE_DOWNLOAD_PROTOCOL_HTTP"
+            ],
             "default": "MBED_CLOUD_CLIENT_UPDATE_DOWNLOAD_PROTOCOL_COAP",
             "value": "MBED_CLOUD_CLIENT_UPDATE_DOWNLOAD_PROTOCOL_COAP"
         },
@@ -28,12 +31,16 @@
         },
         "psa-support": {
             "help": "Enables Platform Security Architecture (PSA) feature",
-            "options": [ "null", "1" ],
+            "options": ["null", "1"],
             "default": null,
             "value": null
         }
     },
-    "macros" : [
-        "ARM_UC_PROFILE_MBED_CLOUD_CLIENT=1"
-    ]
+    "macros": ["ARM_UC_PROFILE_MBED_CLOUD_CLIENT=1"],
+    "target_overrides": {
+        "BINBEAT_V1_X": {
+            "update-storage": "ARM_UCP_FLASHIAP_BLOCKDEVICE",
+            "external-sst-support": null
+        }
+    }
 }
